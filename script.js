@@ -1,5 +1,5 @@
 /* ==========================================================================
-   SAM PREP — Einkaufsliste · Wochenplan mit Rezepten · Nährwert-Tracker
+   SAM PREP — Einkaufsliste · Wochenplan mit Rezepten · Naehrwert-Tracker
    Mehrbenutzer: Login per Magic Link, jedes Konto sieht nur eigene Daten.
    ========================================================================== */
 
@@ -415,8 +415,8 @@ async function mutDeleteRecipe(id) {
 /* ==========================================================================
    KI-FUNKTIONEN (via Claude, als Supabase Edge Functions)
    ========================================================================== */
-/* Edge Functions mit dem Token des angemeldeten Kontos aufrufen.
-   Faellt auf den oeffentlichen Schluessel zurueck, solange keine Sitzung steht. */
+/* Edge Functions laufen mit verify_jwt: true und brauchen das Token
+   des angemeldeten Kontos. */
 let fnToken = null;
 function fnHeaders() {
   return {
@@ -1462,7 +1462,6 @@ let currentReceiptStore = "Edeka";
 
 async function loadKnownPrices(texts) {
   // In Sam Prep gibt es keine Kassenzettel und damit keine Preis-Historie.
-  // Die Schaetzung laeuft allein ueber Claude.
   return [];
 }
 
@@ -1564,8 +1563,7 @@ async function mutDeleteFood(id) {
 }
 async function mutSaveGoals(g) {
   if (REMOTE) {
-    // Primaerschluessel ist (user_id, id) - beide Spalten muessen mitkommen,
-    // damit Postgres den Konflikt erkennt.
+    // Primaerschluessel ist (user_id, id) - beide Spalten muessen mit.
     await sb.from("nutrition_goals").upsert(
       { user_id: currentUser && currentUser.id, id: "default", ...g, updated_at: new Date().toISOString() },
       { onConflict: "user_id,id" }
@@ -2218,8 +2216,7 @@ async function init() {
 
 /* ==========================================================================
    LOGIN (Magic Link)
-   Die App startet erst, wenn eine Sitzung existiert. Ohne Sitzung greifen
-   die RLS-Regeln der Datenbank sowieso und es gaebe nichts zu sehen.
+   Die App startet erst, wenn eine Sitzung existiert.
    ========================================================================== */
 let appStarted = false;
 let currentUser = null;
@@ -2232,11 +2229,25 @@ function showGate(show) {
   document.body.classList.toggle("is-locked", show);
 }
 
+/* Formular oder Wartehinweis */
+function authBusy(busy, text) {
+  const form = authEl("authForm");
+  const wait = authEl("authWait");
+  if (form) form.hidden = busy;
+  if (wait) { wait.hidden = !busy; if (text) wait.textContent = text; }
+}
+
 function authNote(text, isError) {
   const n = authEl("authNote");
   if (!n) return;
   n.textContent = text || "";
   n.style.color = isError ? "#FFB4A2" : "";
+}
+
+/* Token-Reste aus der Adresszeile raeumen, damit ein Reload
+   nicht auf einem verbrauchten Link haengen bleibt. */
+function cleanUrl() {
+  try { history.replaceState(null, "", location.origin + location.pathname); } catch (e) {}
 }
 
 async function sendMagicLink() {
@@ -2253,10 +2264,10 @@ async function sendMagicLink() {
   try {
     const { error } = await sb.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: window.location.href.split("#")[0] }
+      options: { emailRedirectTo: location.origin + location.pathname }
     });
     if (error) throw error;
-    authNote("Link verschickt. Schau in dein Postfach — der Link oeffnet die App direkt.");
+    authNote("Link verschickt. Oeffne ihn am besten in demselben Browser, in dem du ihn angefordert hast.");
     if (btn) btn.textContent = "Nochmal senden";
   } catch (e) {
     authNote("Hat nicht geklappt: " + shortErr(e), true);
@@ -2268,49 +2279,81 @@ async function sendMagicLink() {
 
 async function signOut() {
   try { await sb.auth.signOut(); } catch (e) { console.warn(e); }
+  cleanUrl();
   location.reload();
-}
-
-function showWhoami() {
-  const el = authEl("authWho");
-  if (el && currentUser) el.textContent = currentUser.email || "angemeldet";
 }
 
 async function startApp(session) {
   currentUser = session.user;
   fnToken = session.access_token;
+  const who = authEl("authWho");
+  if (who) who.textContent = currentUser.email || "angemeldet";
+  cleanUrl();
   showGate(false);
-  showWhoami();
   if (appStarted) return;
   appStarted = true;
   await init();
 }
 
+/* Fehler, die Supabase im Hash zurueckgibt (abgelaufener Link usw.) */
+function errorFromUrl() {
+  const h = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  const q = new URLSearchParams(location.search || "");
+  const code = h.get("error") || q.get("error");
+  if (!code) return "";
+  const desc = h.get("error_description") || q.get("error_description") || code;
+  return decodeURIComponent(String(desc).replace(/\+/g, " "));
+}
+
 async function bootstrap() {
-  const gate = authEl("authGate");
+  // Ohne Supabase: Lokal-Modus ohne Login, nur auf diesem Geraet.
+  if (!REMOTE) { showGate(false); await init(); return; }
 
-  // Kein Supabase erreichbar: Lokal-Modus ohne Login, nur auf diesem Geraet.
-  if (!REMOTE) {
-    showGate(false);
-    await init();
-    return;
+  const sendBtn = authEl("authSend");
+  if (sendBtn) sendBtn.addEventListener("click", sendMagicLink);
+  const mail = authEl("authEmail");
+  if (mail) mail.addEventListener("keydown", e => { if (e.key === "Enter") sendMagicLink(); });
+  const out = authEl("logoutBtn");
+  if (out) out.addEventListener("click", signOut);
+
+  const urlErr = errorFromUrl();
+  const hasToken = /access_token=|[?&]code=/.test(location.hash + location.search);
+
+  // Waehrend der Link ausgewertet wird, kein Mailfeld zeigen.
+  if (hasToken && !urlErr) { showGate(true); authBusy(true, "Einen Moment, du wirst angemeldet…"); }
+
+  let session = null;
+  try {
+    const { data } = await sb.auth.getSession();
+    session = data && data.session;
+  } catch (e) { console.warn(e); }
+
+  // PKCE-Links kommen als ?code= zurueck und muessen getauscht werden.
+  if (!session && /[?&]code=/.test(location.search)) {
+    try {
+      const { data, error } = await sb.auth.exchangeCodeForSession(location.search);
+      if (error) throw error;
+      session = data && data.session;
+    } catch (e) {
+      console.warn("Code-Tausch:", e);
+    }
   }
 
-  authEl("authSend")?.addEventListener("click", sendMagicLink);
-  authEl("authEmail")?.addEventListener("keydown", e => { if (e.key === "Enter") sendMagicLink(); });
-  authEl("logoutBtn")?.addEventListener("click", signOut);
+  if (session) { await startApp(session); return; }
 
-  const { data } = await sb.auth.getSession();
-  if (data && data.session) {
-    await startApp(data.session);
-  } else {
-    showGate(true);
+  showGate(true);
+  authBusy(false);
+  if (urlErr) {
+    cleanUrl();
+    authNote("Der Link hat nicht funktioniert (" + urlErr + "). Fordere unten einen neuen an.", true);
+  } else if (hasToken) {
+    cleanUrl();
+    authNote("Der Link konnte hier nicht eingeloest werden. Das passiert, wenn er in einem anderen Browser geoeffnet wird als dem, in dem du ihn angefordert hast. Fordere den Link hier nochmal an.", true);
   }
 
-  // Faengt den Rueckweg aus dem Magic Link ab.
-  sb.auth.onAuthStateChange(async (event, session) => {
-    if (session) { fnToken = session.access_token; await startApp(session); }
-    else if (event === "SIGNED_OUT") location.reload();
+  sb.auth.onAuthStateChange(async (event, s2) => {
+    if (s2) await startApp(s2);
+    else if (event === "SIGNED_OUT" && appStarted) location.reload();
   });
 }
 

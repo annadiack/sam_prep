@@ -465,12 +465,20 @@ button{ font-family:var(--font-body); cursor:pointer; }
 .ingredient-calories__row span:last-child{ color:var(--gold-bright); font-weight:500; }
 
 /* ---------- LOGIN ---------- */
+/* WICHTIG: .auth-gate{display:flex} wuerde das hidden-Attribut ueberstimmen
+   (Klasse schlaegt [hidden]). Ohne diese Zeile bleibt die Login-Karte
+   auch nach erfolgreicher Anmeldung ueber der App stehen. */
+.auth-gate[hidden]{ display:none !important; }
+.auth-wait[hidden], #authForm[hidden]{ display:none !important; }
+
 body.is-locked{ overflow:hidden; }
 body.is-locked #topNav,
 body.is-locked .panel,
 body.is-locked .scroll-progress{ display:none !important; }
+
 .auth-gate{ position:fixed; inset:0; z-index:9000; display:flex; align-items:center;
-  justify-content:center; padding:24px; }
+  justify-content:center; padding:24px; background:rgba(12,8,5,.72);
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); }
 .auth-card{ width:100%; max-width:420px; padding:34px 28px 30px;
   background:var(--glass); border:1px solid var(--stroke);
   box-shadow:0 0 0 1px rgba(240,206,154,.12), 0 30px 80px rgba(0,0,0,.55);
@@ -478,6 +486,7 @@ body.is-locked .scroll-progress{ display:none !important; }
 .auth-card__title{ font-family:"Marcellus",serif; font-size:30px; line-height:1.15;
   margin:6px 0 12px; color:var(--gold-bright); text-shadow:0 0 18px rgba(240,206,154,.35); }
 .auth-card__lead{ font-size:14px; line-height:1.55; color:var(--text-soft); margin:0 0 22px; }
+.auth-wait{ font-size:14px; color:var(--gold-bright); margin:0; padding:10px 0 4px; }
 .auth-label{ display:block; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
   color:var(--text-soft); margin-bottom:7px; }
 .auth-input{ width:100%; padding:13px 14px; font-size:16px; color:var(--text);
@@ -485,7 +494,7 @@ body.is-locked .scroll-progress{ display:none !important; }
 .auth-input:focus{ outline:none; border-color:var(--gold-bright);
   box-shadow:0 0 0 1px rgba(240,206,154,.35); }
 .auth-btn{ width:100%; margin-top:14px; }
-.auth-note{ min-height:19px; margin:12px 0 0; font-size:13px; line-height:1.45; color:var(--gold-bright); }
+.auth-note{ margin:12px 0 0; font-size:13px; line-height:1.45; color:var(--gold-bright); }
 .auth-hint{ margin:16px 0 0; font-size:11.5px; line-height:1.5; color:rgba(245,237,228,.5); }
 .nav__who{ font-size:11px; letter-spacing:.06em; color:rgba(245,237,228,.5);
   max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -531,13 +540,19 @@ body.is-locked .scroll-progress{ display:none !important; }
     <h1 class="auth-card__title">Kochen ohne Chaos.</h1>
     <p class="auth-card__lead">Rezepte aus TikTok und Instagram holen, Woche planen,
       Einkaufsliste automatisch f&uuml;llen und N&auml;hrwerte mitz&auml;hlen.</p>
-    <label class="auth-label" for="authEmail">Deine E-Mail-Adresse</label>
-    <input type="email" id="authEmail" class="auth-input" placeholder="du@beispiel.de"
-           autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false">
-    <button type="button" class="btn btn--gold auth-btn" id="authSend">Link senden</button>
-    <p class="auth-note" id="authNote"></p>
-    <p class="auth-hint">Kein Passwort n&ouml;tig. Du bekommst eine Mail mit einem Link,
-      der dich direkt anmeldet. Beim ersten Mal wird dein Konto dabei angelegt.</p>
+
+    <p class="auth-wait" id="authWait" hidden>Einen Moment, du wirst angemeldet&hellip;</p>
+
+    <div id="authForm">
+      <label class="auth-label" for="authEmail">Deine E-Mail-Adresse</label>
+      <input type="email" id="authEmail" class="auth-input" placeholder="du@beispiel.de"
+             autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false">
+      <button type="button" class="btn btn--gold auth-btn" id="authSend">Link senden</button>
+      <p class="auth-note" id="authNote"></p>
+      <p class="auth-hint">Kein Passwort n&ouml;tig. Du bekommst eine Mail mit einem Link,
+        der dich direkt anmeldet. Beim ersten Mal wird dein Konto dabei angelegt.
+        &Ouml;ffne den Link im selben Browser, in dem du ihn angefordert hast.</p>
+    </div>
   </div>
 </div>
 
@@ -891,8 +906,8 @@ body.is-locked .scroll-progress{ display:none !important; }
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="config.js?v=1"></script>
-<script src="script.js?v=1"></script>
+<script src="config.js?v=2"></script>
+<script src="script.js?v=2"></script>
 <script src="linkify.js?v=1"></script>
 </body>
 </html>
