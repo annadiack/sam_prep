@@ -1,4 +1,11 @@
+/* ==========================================================================
+   SAM PREP — Verbindung zum eigenen Supabase-Projekt
+   Projekt: sam_prep (qmrwrhjakchwmptwatbd), Region Frankfurt
+   Dieser Schluessel darf oeffentlich sein: er erlaubt nur, was die
+   RLS-Regeln erlauben, und die geben jedem Konto ausschliesslich
+   die eigenen Zeilen.
+   ========================================================================== */
 window.APP_CONFIG = {
-  SUPABASE_URL: "https://objzavshpyhndvbdgrzk.supabase.co",
-  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ianphdnNocHlobmR2YmRncnprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1NDAyNDIsImV4cCI6MjA5OTExNjI0Mn0.M2adyvUFEEAkB148s6uhrLyYp8kUICWuM1CJQa22RfI"
+  SUPABASE_URL: "https://qmrwrhjakchwmptwatbd.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_s1zHhDbtHR8HK48EZiQ42g_OB_zgCAt"
 };
