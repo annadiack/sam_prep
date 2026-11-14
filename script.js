@@ -57,12 +57,10 @@ const REMOTE = !!sb;
 const FUNCTIONS_BASE = cfg.SUPABASE_URL ? `${cfg.SUPABASE_URL}/functions/v1` : "";
 const STORAGE_KEY = "homebase_state_v7";
 
-let state = { lists: [], categories: [], shopping: [], backlog: [], calendar: [], recipes: [], notes: [], locations: [], foodLog: [], goals: null, foods: [] };
+let state = { lists: [], categories: [], shopping: [], calendar: [], recipes: [], foodLog: [], goals: null, foods: [] };
 let trackerDate = null;
-let noteQuery = "";
 let expandedNote = null;
 let currentImport = null;
-let currentReceiptItems = null;
 let activeListId = null;
 let showHistory = false;
 let expandedRecipe = null;
@@ -74,7 +72,7 @@ let calAnchor = todayISO();
 let expandedCal = null;
 
 /* View-Navigation (Eltern für Zurück-Button) */
-const VIEW_PARENT = { lists: "dashboard", listdetail: "lists", calendar: "dashboard", backlog: "dashboard", notes: "dashboard", guide: "dashboard", prospekte: "dashboard", standort: "dashboard", tracker: "dashboard" };
+const VIEW_PARENT = { lists: "dashboard", listdetail: "lists", calendar: "dashboard", prospekte: "dashboard", tracker: "dashboard" };
 let currentView = "dashboard";
 
 /* ---------- Lokal-Modus ---------- */
@@ -85,11 +83,11 @@ function localLoad() {
   } catch (e) { /* ignorieren */ }
   if (!state.lists || !state.lists.length) {
     const id = "list_default";
-    state = { lists: [{ id, name: "Wocheneinkauf", sort_order: 1, completed_at: null }], categories: [], shopping: [], backlog: [], calendar: [], recipes: [] };
+    state = { lists: [{ id, name: "Wocheneinkauf", sort_order: 1, completed_at: null }], categories: [], shopping: [], calendar: [], recipes: [] };
     DEFAULT_CATS.forEach((name, i) => state.categories.push({ id: uid("cat_"), list_id: id, name, sort_order: i + 1 }));
     localSave();
   }
-  ["lists", "categories", "shopping", "backlog", "calendar", "recipes", "notes"].forEach(k => { if (!state[k]) state[k] = []; });
+  ["lists", "categories", "shopping", "calendar", "recipes"].forEach(k => { if (!state[k]) state[k] = []; });
 }
 function localSave() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
@@ -100,11 +98,8 @@ async function remoteFetchAll() {
     ["lists", () => sb.from("shopping_lists").select("*").order("sort_order")],
     ["categories", () => sb.from("categories").select("*").order("sort_order")],
     ["shopping", () => sb.from("shopping_items").select("*").order("created_at")],
-    ["backlog", () => sb.from("backlog_items").select("*").order("created_at")],
     ["calendar", () => sb.from("calendar_entries").select("*").order("plan_date")],
     ["recipes", () => sb.from("recipes").select("*").order("created_at")],
-    ["notes", () => sb.from("notes").select("*").order("updated_at", { ascending: false })],
-    ["locations", () => sb.from("locations").select("*")],
     ["foodLog", () => sb.from("food_log").select("*").order("created_at")],
     ["goals", () => sb.from("nutrition_goals").select("*").eq("id", "default").maybeSingle()],
     ["foods", () => sb.from("foods").select("*").order("created_at", { ascending: false })],
@@ -120,14 +115,11 @@ async function remoteFetchAll() {
   const core = ["lists", "categories", "shopping"];
   if (core.some(k => failed.includes(k))) throw new Error("Kerndaten nicht ladbar: " + failed.join(", "));
 
-  if (data.locations) state.locations = data.locations;
   state.lists = data.lists || [];
   state.categories = data.categories || [];
   state.shopping = data.shopping || [];
-  if (data.backlog) state.backlog = data.backlog;
   if (data.calendar) state.calendar = data.calendar;
   if (data.recipes) state.recipes = data.recipes.map(r => ({ ...r, ingredients: r.ingredients || [] }));
-  if (data.notes) state.notes = data.notes;
   if (data.foodLog) state.foodLog = data.foodLog;
   if ("goals" in data) state.goals = data.goals || null;
   if (data.foods) state.foods = data.foods;
@@ -336,21 +328,6 @@ async function mutDeleteShopping(id) {
 }
 
 /* ---------- Mutationen: Backlog ---------- */
-async function mutAddBacklog(text, calories, quantity, source) {
-  const exp = suggestExpiry(text);
-  if (REMOTE) { await sb.from("backlog_items").insert({ text, calories: calories ?? null, quantity: quantity || "", source: source || "manual", expires_at: exp }); await remoteFetchAll(); }
-  else { state.backlog.push({ id: uid("b"), text, calories: calories ?? null, quantity: quantity || "", source: source || "manual", checked: false, expires_at: exp }); localSave(); }
-  renderAll();
-}
-async function mutToggleBacklog(id, checked) {
-  if (REMOTE) { await sb.from("backlog_items").update({ checked }).eq("id", id); }
-  else { const it = state.backlog.find(i => i.id === id); if (it) it.checked = checked; localSave(); }
-}
-async function mutDeleteBacklog(id) {
-  if (REMOTE) { await sb.from("backlog_items").delete().eq("id", id); await remoteFetchAll(); }
-  else { state.backlog = state.backlog.filter(i => i.id !== id); localSave(); }
-  renderAll();
-}
 
 /* ---------- Mutationen: Kategorien ---------- */
 async function mutAddCategory(name, listId) {
@@ -369,6 +346,13 @@ async function mutReorderCategories(orderedIds) {
   orderedIds.forEach((id, i) => { const c = state.categories.find(c => c.id === id); if (c) c.sort_order = i + 1; });
   if (REMOTE) { await Promise.all(orderedIds.map((id, i) => sb.from("categories").update({ sort_order: i + 1 }).eq("id", id))); await remoteFetchAll(); }
   else localSave();
+  renderAll();
+}
+async function mutClearCategory(catId) {
+  const items = itemsOfCat(catId);
+  if (!items.length) return;
+  if (REMOTE) { await sb.from("shopping_items").delete().eq("category", catId); await remoteFetchAll(); }
+  else { state.shopping = state.shopping.filter(i => i.category !== catId); localSave(); }
   renderAll();
 }
 async function mutDeleteCategory(id) {
@@ -391,6 +375,16 @@ async function mutDeleteCalendarEntry(id) {
 }
 
 /* ---------- Mutationen: Rezepte (ohne Zutaten-Import in die Liste) ---------- */
+async function mutSetRecipeThumb(id, thumbnail) {
+  if (REMOTE) { await sb.from("recipes").update({ thumbnail }).eq("id", id); await remoteFetchAll(); }
+  else { const r = state.recipes.find(x => x.id === id); if (r) r.thumbnail = thumbnail; localSave(); }
+  renderAll();
+}
+async function mutSetRecipeSteps(id, steps, source) {
+  if (REMOTE) { await sb.from("recipes").update({ steps, steps_source: source }).eq("id", id); await remoteFetchAll(); }
+  else { const r = state.recipes.find(x => x.id === id); if (r) { r.steps = steps; r.steps_source = source; } localSave(); }
+  renderAll();
+}
 async function mutAddRecipe(recipe, ingredients, planDate) {
   if (REMOTE) {
     const { data, error } = await sb.from("recipes").insert({ ...recipe, ingredients }).select().single();
@@ -415,32 +409,6 @@ async function mutDeleteRecipe(id) {
   if (REMOTE) { await sb.from("calendar_entries").delete().eq("recipe_id", id); await sb.from("recipes").delete().eq("id", id); await remoteFetchAll(); }
   else { state.recipes = state.recipes.filter(r => r.id !== id); state.calendar = state.calendar.filter(e => e.recipe_id !== id); localSave(); }
   renderAll();
-}
-
-/* ---------- Mutationen: Notizen ---------- */
-async function mutAddNote() {
-  if (REMOTE) {
-    const { data, error } = await sb.from("notes").insert({ title: "", body: "" }).select().single();
-    if (error) throw error;
-    expandedNote = data.id;
-    await remoteFetchAll();
-  } else {
-    const id = uid("n");
-    state.notes.unshift({ id, title: "", body: "", updated_at: new Date().toISOString() });
-    expandedNote = id; localSave();
-  }
-  renderNotes();
-}
-async function mutUpdateNote(id, title, body) {
-  if (REMOTE) { await sb.from("notes").update({ title, body, updated_at: new Date().toISOString() }).eq("id", id); await remoteFetchAll(); }
-  else { const n = state.notes.find(x => x.id === id); if (n) { n.title = title; n.body = body; n.updated_at = new Date().toISOString(); } localSave(); }
-  renderNotes();
-}
-async function mutDeleteNote(id) {
-  if (REMOTE) { await sb.from("notes").delete().eq("id", id); await remoteFetchAll(); }
-  else { state.notes = state.notes.filter(n => n.id !== id); localSave(); }
-  if (expandedNote === id) expandedNote = null;
-  renderNotes();
 }
 
 /* ==========================================================================
@@ -472,11 +440,11 @@ async function callEstimateCalories(items) {
   if (!res.ok) throw new Error("estimate-calories " + res.status);
   return res.json();
 }
-async function callExtractIngredients(text) {
+async function callExtractIngredients(text, image, mimeType) {
   const res = await fetch(`${FUNCTIONS_BASE}/extract-ingredients`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(image ? { text, image, mimeType } : { text }),
   });
   if (!res.ok) {
     let detail = "";
@@ -614,7 +582,6 @@ function openView(name) {
   back.hidden = name === "dashboard";
   back.textContent = name === "listdetail" ? "← Listen" : "← Übersicht";
   window.scrollTo({ top: 0 });
-  if (name === "standort" && typeof initMap === "function") setTimeout(initMap, 80);
 }
 function openList(id) { activeListId = id; showHistory = false; renderListDetail(); openView("listdetail"); }
 document.querySelectorAll("[data-open-view]").forEach(el => el.addEventListener("click", () => openView(el.dataset.openView)));
@@ -633,9 +600,6 @@ function renderDashboardTiles() {
   document.getElementById("tileListMeta").textContent = act.length ? `${act.length} Liste${act.length > 1 ? "n" : ""}` : "Keine Liste";
   const upcoming = state.calendar.filter(e => e.plan_date >= todayISO() && e.meal).sort((a, b) => a.plan_date < b.plan_date ? -1 : 1)[0];
   document.getElementById("tileCalendarMeta").textContent = upcoming ? `${formatDayLabel(upcoming.plan_date)}: ${shortTitle(upcoming.meal)}` : "Noch nichts geplant";
-  document.getElementById("tileBacklogMeta").textContent = state.backlog.length ? `${state.backlog.length} Artikel` : "Leer";
-  const nt = document.getElementById("tileNotesMeta");
-  if (nt) nt.textContent = state.notes.length ? `${state.notes.length} Notiz${state.notes.length > 1 ? "en" : ""}` : "Leer";
   const tt = document.getElementById("tileTrackerMeta");
   if (tt) { const s = foodTotals(todayISO()), g = goalValues(); tt.textContent = `${s.kcal} / ${g.kcal} kcal heute`; }
 }
@@ -706,6 +670,7 @@ function renderListDetail() {
         <div class="category-card__head" data-cat-head="${cat.id}">
           <button type="button" class="cat-drag-handle" data-drag-handle aria-label="Verschieben">⠿</button>
           <span class="category-card__tag" contenteditable="true" spellcheck="false" data-cat-name="${cat.id}">${esc(cat.name)}</span>
+          ${items.length ? `<button type="button" class="item-icon-btn cat-clear" data-clear-category="${cat.id}" title="Alle Artikel dieser Kategorie löschen" aria-label="Kategorie leeren">🧹</button>` : ""}
           <button type="button" class="item-delete-btn category-delete-btn" data-delete-category="${cat.id}" aria-label="Kategorie löschen">×</button>
         </div>
         <ul>
@@ -763,6 +728,12 @@ function renderListDetail() {
     mutToggleFlag(it.id, it.flagged);
   }));
   // Kategorie löschen / umbenennen
+  grid.querySelectorAll("[data-clear-category]").forEach(btn => btn.addEventListener("click", e => {
+    e.stopPropagation();
+    const cat = state.categories.find(c => String(c.id) === btn.dataset.clearCategory);
+    const n = itemsOfCat(btn.dataset.clearCategory).length;
+    if (confirm(`Alle ${n} Artikel aus „${cat ? cat.name : "dieser Kategorie"}" löschen?`)) mutClearCategory(btn.dataset.clearCategory);
+  }));
   grid.querySelectorAll("[data-delete-category]").forEach(btn => btn.addEventListener("click", e => { e.stopPropagation(); mutDeleteCategory(btn.dataset.deleteCategory); }));
   grid.querySelectorAll("[data-cat-name]").forEach(tag => {
     tag.addEventListener("blur", () => { const v = tag.textContent.trim(); if (v) mutRenameCategory(tag.dataset.catName, v); });
@@ -789,33 +760,6 @@ function renderListDetail() {
     }).join("");
     histBox.querySelectorAll("[data-copy-hist]").forEach(b => b.addEventListener("click", () => mutCopyFromList(b.dataset.copyHist, activeListId)));
   } else { histBox.hidden = true; histBox.innerHTML = ""; }
-}
-
-/* ==========================================================================
-   BACKLOG
-   ========================================================================== */
-function renderBacklog() {
-  const grid = document.getElementById("pantryGrid");
-  grid.innerHTML = state.backlog.map(it => `
-    <div class="item-row" data-row-id="${it.id}">
-      <div class="item ${it.checked ? "is-checked" : ""}" data-id="${it.id}">
-        <span class="check" data-bcheck="${it.id}">${checkIconSVG()}</span>
-        <span class="item__text">${esc(it.text)}${it.quantity ? ` <small>(${esc(it.quantity)})</small>` : ""}</span>
-        ${calBadge(it.calories)}
-        ${mhdBadge(it)}
-        <button type="button" class="item-delete-btn" data-delete-pantry="${it.id}" aria-label="Löschen">×</button>
-      </div>
-    </div>`).join("");
-  const total = state.backlog.reduce((s, it) => s + (it.calories || 0), 0);
-  document.getElementById("backlogTotal").textContent = state.backlog.length ? `${state.backlog.length} Artikel · ${total} kcal gesamt` : "Backlog ist leer.";
-  grid.querySelectorAll("[data-bcheck]").forEach(el => el.addEventListener("click", () => {
-    const it = state.backlog.find(i => String(i.id) === el.dataset.bcheck); if (!it) return;
-    it.checked = !it.checked; el.closest(".item").classList.toggle("is-checked", it.checked); mutToggleBacklog(it.id, it.checked);
-  }));
-  grid.querySelectorAll("[data-mhd]").forEach(inp => inp.addEventListener("change", e => { e.stopPropagation(); mutSetExpiry(inp.dataset.mhd, inp.value || null); }));
-  grid.querySelectorAll("[data-mhd]").forEach(inp => inp.addEventListener("click", e => e.stopPropagation()));
-  grid.querySelectorAll("[data-delete-pantry]").forEach(btn => btn.addEventListener("click", e => { e.stopPropagation(); mutDeleteBacklog(btn.dataset.deletePantry); }));
-  grid.querySelectorAll("[data-row-id]").forEach(row => makeSwipeToDelete(row, row.querySelector(".item"), () => mutDeleteBacklog(row.dataset.rowId)));
 }
 
 /* ==========================================================================
@@ -866,7 +810,6 @@ function dayRowHTML(iso) {
       <div class="cal-day-row__date"><span class="cal-dow">${d.toLocaleDateString("de-DE", { weekday: "short" })}</span><span class="cal-dom">${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}</span></div>
       <div class="cal-day-row__body">
         <div class="cal-chips">${dayEntriesHTML(iso) || `<span class="cal-empty">—</span>`}</div>
-        ${expiryHTML(iso)}
         ${calDetailHTML(iso)}
         ${recipeAddSelect(iso)}
       </div>
@@ -900,7 +843,7 @@ function renderCalMonth(body, title) {
   for (let i = 0; i < 42; i++) {
     const iso = addDaysISO(gridStart, i), dd = new Date(iso + "T00:00:00"), meals = calEntriesOn(iso);
     html += `<button type="button" class="cal-cell ${dd.getMonth() === anchorMonth ? "" : "is-out"} ${iso === todayISO() ? "is-today" : ""}" data-cal-day="${iso}">
-      <span class="cal-cell__num">${dd.getDate()}</span>${meals.slice(0, 2).map(m => `<span class="cal-cell__meal">${esc(shortTitle(m.meal))}</span>`).join("")}${expiringOn(iso).slice(0, 2).map(b => `<span class="cal-cell__mhd">⏳ ${esc(shortTitle(b.text))}</span>`).join("")}</button>`;
+      <span class="cal-cell__num">${dd.getDate()}</span>${meals.slice(0, 2).map(m => `<span class="cal-cell__meal">${esc(shortTitle(m.meal))}</span>`).join("")}</button>`;
   }
   html += `</div>`; body.innerHTML = html;
   body.querySelectorAll("[data-cal-day]").forEach(c => c.addEventListener("click", () => { calAnchor = c.dataset.calDay; calView = "day"; renderCalendar(); }));
@@ -931,12 +874,17 @@ function renderRecipeGallery() {
     return `
     <div class="recipe-card ${open ? "is-open" : ""}" data-id="${r.id}">
       <button type="button" class="recipe-card__toggle" data-toggle-recipe="${r.id}">
-        ${r.thumbnail ? `<img src="${esc(r.thumbnail)}" alt="" class="recipe-card__thumb">` : `<div class="recipe-card__thumb recipe-card__thumb--placeholder">${platformLabel(r.platform)}</div>`}
+        ${r.thumbnail ? `<img src="${esc(r.thumbnail)}" alt="" class="recipe-card__thumb" onerror="this.remove()">` : ""}
         <span class="recipe-card__title">${esc(shortTitle(r.title))}</span>
       </button>
       ${open ? `
         <div class="recipe-card__detail">
           <span class="platform-tag">${platformLabel(r.platform)}</span>
+          ${r.url ? `<button type="button" class="recipe-card__remove" data-fix-thumb="${r.id}">🖼 Vorschaubild neu laden</button>` : ""}
+          ${(r.steps && r.steps.length) ? `
+            <button type="button" class="btn btn--gold btn--small cook-start" data-cook="${r.id}">👨‍🍳 Mit Kochen starten</button>
+            <p class="cook-hint">${r.steps.length} Schritte${r.steps_source === "vorschlag" ? " · aus den Zutaten vorgeschlagen" : ""}</p>` : `
+            <button type="button" class="btn btn--outline btn--small" data-make-steps="${r.id}">👨‍🍳 Kochschritte erstellen</button>`}
           ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" class="day-card__link">Rezept öffnen ↗</a>` : ""}
           ${(r.ingredients && r.ingredients.length) ? `<ul class="recipe-ings">${r.ingredients.map(ing => `<li><span>${esc(ing.text)}</span>${ing.calories ? `<span class="item__calories">${ing.calories} kcal</span>` : ""}</li>`).join("")}</ul>` : `<p class="recipe-noings">Noch keine Zutaten.</p><button type="button" class="btn btn--outline btn--small" data-extract-recipe="${r.id}">✨ Zutaten automatisch erkennen</button>`}
           ${total ? `<p class="recipe-total-calories">Gesamt: ${total} kcal</p>` : ""}
@@ -951,6 +899,25 @@ function renderRecipeGallery() {
     </div>`;
   }).join("");
   wrap.querySelectorAll("[data-toggle-recipe]").forEach(b => b.addEventListener("click", () => { expandedRecipe = expandedRecipe === b.dataset.toggleRecipe ? null : b.dataset.toggleRecipe; renderRecipeGallery(); }));
+  wrap.querySelectorAll("[data-cook]").forEach(b => b.addEventListener("click", () => startCooking(b.dataset.cook)));
+  wrap.querySelectorAll("[data-fix-thumb]").forEach(b => b.addEventListener("click", async () => {
+    const r = state.recipes.find(x => String(x.id) === b.dataset.fixThumb); if (!r || !r.url) return;
+    b.textContent = "Lade Bild…"; b.disabled = true;
+    try {
+      const meta = await fetchLinkMeta(r.url);
+      if (meta && meta.thumbnail) { await mutSetRecipeThumb(r.id, meta.thumbnail); }
+      else { b.textContent = "Kein Bild gefunden"; b.disabled = false; }
+    } catch (e) { b.textContent = "Fehlgeschlagen — nochmal tippen"; b.disabled = false; console.warn(e); }
+  }));
+  wrap.querySelectorAll("[data-make-steps]").forEach(b => b.addEventListener("click", async () => {
+    const r = state.recipes.find(x => x.id === b.dataset.makeSteps); if (!r) return;
+    b.textContent = "Erstelle Schritte…"; b.disabled = true;
+    try {
+      const quelle = [r.title, (r.ingredients || []).map(i => i.text).join(", ")].filter(Boolean).join("\n");
+      const result = await callExtractIngredients(quelle);
+      await mutSetRecipeSteps(r.id, result.steps || [], result.steps_source || "vorschlag");
+    } catch (e) { b.textContent = "Fehlgeschlagen — nochmal tippen"; b.disabled = false; console.warn(e); }
+  }));
   wrap.querySelectorAll("[data-delete-recipe]").forEach(b => b.addEventListener("click", () => mutDeleteRecipe(b.dataset.deleteRecipe)));
   wrap.querySelectorAll("[data-extract-recipe]").forEach(b => b.addEventListener("click", async () => {
     const r = state.recipes.find(x => x.id === b.dataset.extractRecipe); if (!r) return;
@@ -977,59 +944,13 @@ function renderRecipeGallery() {
   }));
 }
 
-/* ---------- Notizen ---------- */
-function renderNotes() {
-  const grid = document.getElementById("notesGrid");
-  if (!grid) return;
-  const q = noteQuery.trim().toLowerCase();
-  const notes = [...state.notes]
-    .filter(n => !q || (n.title || "").toLowerCase().includes(q) || (n.body || "").toLowerCase().includes(q))
-    .sort((a, b) => ((a.updated_at || "") < (b.updated_at || "") ? 1 : -1));
-  grid.innerHTML = notes.map(n => {
-    if (expandedNote === n.id) {
-      return `
-      <div class="note-card is-open" data-note="${n.id}">
-        <input type="text" class="note-title-input" data-note-title="${n.id}" value="${esc(n.title)}" placeholder="Titel">
-        <textarea class="note-body-input" data-note-body="${n.id}" rows="7" placeholder="Notiz schreiben…">${esc(n.body)}</textarea>
-        <div class="note-actions">
-          <button type="button" class="btn btn--gold btn--small" data-note-done="${n.id}">Fertig</button>
-          <button type="button" class="btn btn--outline btn--small" data-note-del="${n.id}">Löschen</button>
-        </div>
-      </div>`;
-    }
-    const preview = (n.body || "").replace(/\n/g, " ").slice(0, 90);
-    return `
-      <div class="note-card" data-note-open="${n.id}">
-        <p class="note-card__title">${esc(n.title) || "Ohne Titel"}</p>
-        <p class="note-card__preview">${esc(preview) || "—"}</p>
-        <p class="note-card__date">${formatDate(n.updated_at)}</p>
-      </div>`;
-  }).join("") || `<p class="section__desc">${q ? "Keine Notiz gefunden." : "Noch keine Notiz — leg oben eine an."}</p>`;
-
-  grid.querySelectorAll("[data-note-open]").forEach(c => c.addEventListener("click", () => { expandedNote = c.dataset.noteOpen; renderNotes(); }));
-  grid.querySelectorAll("[data-note-done]").forEach(b => b.addEventListener("click", () => { saveOpenNote(b.dataset.noteDone); expandedNote = null; renderNotes(); }));
-  grid.querySelectorAll("[data-note-del]").forEach(b => b.addEventListener("click", () => mutDeleteNote(b.dataset.noteDel)));
-}
-function saveOpenNote(id) {
-  const t = document.querySelector(`[data-note-title="${id}"]`);
-  const b = document.querySelector(`[data-note-body="${id}"]`);
-  const n = state.notes.find(x => x.id === id);
-  if (!n || (!t && !b)) return;
-  const title = t ? t.value : n.title;
-  const body = b ? b.value : n.body;
-  if (title !== n.title || body !== n.body) mutUpdateNote(id, title, body);
-}
-
 function renderAll() {
   renderDashboardTiles();
   renderListsOverview();
   renderListDetail();
-  renderBacklog();
   renderCalendar();
   renderRecipeGallery();
-  renderNotes();
   renderTracker();
-  if (typeof renderLocationMarkers === "function") renderLocationMarkers();
 }
 function renderSyncBadge(ok, detail) {
   const b = document.getElementById("syncBadge");
@@ -1143,7 +1064,6 @@ window.addEventListener("unhandledrejection", ev => {
    MODAL: REZEPT IMPORTIEREN (ohne Zutaten-Übernahme in die Liste)
    ========================================================================== */
 const importModal = document.getElementById("importModal");
-const receiptModal = document.getElementById("receiptModal");
 function openModal(el) { el.hidden = false; document.documentElement.style.overflow = "hidden"; }
 function closeModal(el) { el.hidden = true; document.documentElement.style.overflow = ""; }
 
@@ -1261,6 +1181,7 @@ function populateImportDays() {
 function resetImportForm() {
   currentImport = null;
   ["importUrl", "importIngredients", "previewTitle", "importCaption"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+  lastSteps = null; lastStepsSource = null; lastServings = null;
   const th = document.getElementById("previewThumb"); if (th) { th.hidden = false; th.src = ""; }
   document.getElementById("platformNote").textContent = "";
   document.getElementById("importPreview").hidden = true;
@@ -1306,7 +1227,32 @@ document.getElementById("loadPreview").addEventListener("click", async () => {
   if (meta) note.textContent = "Vorschau geladen.";
 });
 
+function applyExtraction(result, note) {
+  const items = result.items || [];
+  if (!items.length) { if (note) note.textContent = "Keine Zutaten erkannt — bitte manuell eintragen."; return false; }
+  document.getElementById("importIngredients").value = items.map(i => i.text).join("\n");
+  lastEstimatedCalories = items;
+  lastSteps = result.steps || null;
+  lastStepsSource = result.steps_source || null;
+  lastServings = result.servings || null;
+  const t = document.getElementById("previewTitle");
+  if (t && !t.value.trim() && result.title) {
+    t.value = result.title;
+    document.getElementById("importPreview").hidden = false;
+  }
+  document.getElementById("ingredientCalories").innerHTML = items.map(it =>
+    `<div class="ingredient-calories__row"><span>${esc(it.text)}</span><span>${it.calories ?? "–"} kcal</span></div>`).join("");
+  const totalEl = document.getElementById("recipeTotalCalories");
+  totalEl.textContent = `Gesamt: ${result.total ?? 0} kcal`; totalEl.hidden = false;
+  const s = (result.steps || []).length;
+  if (note) note.textContent = `${items.length} Zutaten${s ? " und " + s + " Kochschritte" : ""} erkannt.`;
+  return true;
+}
+
 let lastEstimatedCalories = null;
+let lastSteps = null;
+let lastStepsSource = null;
+let lastServings = null;
 document.getElementById("estimateCaloriesBtn").addEventListener("click", async () => {
   const note = document.getElementById("caloriesNote");
   const lines = document.getElementById("importIngredients").value.split("\n").map(s => s.trim()).filter(Boolean);
@@ -1352,6 +1298,7 @@ document.getElementById("autoExtractBtn").addEventListener("click", async () => 
     if (!items.length) { note.textContent = "Keine Zutaten erkannt — bitte manuell eintragen."; return; }
     document.getElementById("importIngredients").value = items.map(i => i.text).join("\n");
     lastEstimatedCalories = items;
+    lastSteps = result.steps || null; lastStepsSource = result.steps_source || null; lastServings = result.servings || null;
     document.getElementById("ingredientCalories").innerHTML = items.map(it => `<div class="ingredient-calories__row"><span>${esc(it.text)}</span><span>${it.calories ?? "–"} kcal</span></div>`).join("");
     const totalEl = document.getElementById("recipeTotalCalories");
     totalEl.textContent = `Gesamt: ${result.total ?? 0} kcal`; totalEl.hidden = false;
@@ -1373,122 +1320,136 @@ document.getElementById("saveImport").addEventListener("click", async () => {
   const platform = (currentImport && currentImport.platform) || detectPlatform(url);
   const thumbnail = (currentImport && currentImport.thumbnail) || "";
   try {
-    await mutAddRecipe({ title, url, platform, thumbnail, calories: totalCalories }, ingredients, planDate || null);
-    lastEstimatedCalories = null; closeModal(importModal);
+    await mutAddRecipe({
+      title, url, platform, thumbnail, calories: totalCalories,
+      steps: lastSteps || [], steps_source: lastStepsSource || null,
+      servings: lastServings || 1
+    }, ingredients, planDate || null);
+    lastEstimatedCalories = null; lastSteps = null; lastStepsSource = null; lastServings = null;
+    closeModal(importModal);
   } catch (e) { document.getElementById("platformNote").textContent = "Speichern fehlgeschlagen."; console.warn(e); }
 });
 
 /* ==========================================================================
-   MODAL: KASSENZETTEL SCANNEN
+   KOCHMODUS - Schritt fuer Schritt mit Timer
    ========================================================================== */
-document.getElementById("openReceiptModal").addEventListener("click", () => {
-  currentReceiptItems = null;
-  document.getElementById("receiptFile").value = "";
-  document.getElementById("receiptNote").textContent = "";
-  document.getElementById("receiptResults").innerHTML = "";
-  document.getElementById("receiptResults").hidden = true;
-  document.getElementById("saveReceiptItems").hidden = true;
-  openModal(receiptModal);
-});
-document.getElementById("closeReceiptModal").addEventListener("click", () => closeModal(receiptModal));
-receiptModal.addEventListener("click", e => { if (e.target === receiptModal) closeModal(receiptModal); });
+let cookState = null;
+let cookTick = null;
+let cookWakeLock = null;
 
-document.getElementById("receiptFile").addEventListener("change", async e => {
-  const file = e.target.files[0], note = document.getElementById("receiptNote");
-  if (!file) return;
-  if (!FUNCTIONS_BASE) { note.textContent = "Braucht eine Supabase-Verbindung."; return; }
-  note.textContent = "Lese Kassenzettel…";
+async function keepAwake(on) {
   try {
-    const base64 = await fileToBase64(file);
-    const result = await callScanReceipt(base64, file.type || "image/jpeg");
-    currentReceiptStore = result.store || "Edeka";
-    currentReceiptItems = (result.items || []).map(it => ({ text: it.text, quantity: it.quantity || "", calories: it.calories ?? null, price: it.price ?? null }));
-    renderReceiptResults();
-    note.textContent = currentReceiptItems.length ? "Zutaten erkannt — vor dem Speichern prüfen." : "Keine Artikel erkannt.";
-    document.getElementById("saveReceiptItems").hidden = !currentReceiptItems.length;
-  } catch (err) { note.textContent = (err && err.message) ? err.message : "Scan fehlgeschlagen."; console.warn(err); }
-});
-function renderReceiptResults() {
-  const box = document.getElementById("receiptResults");
-  if (!currentReceiptItems || !currentReceiptItems.length) { box.hidden = true; box.innerHTML = ""; return; }
-  box.hidden = false;
-  box.innerHTML = currentReceiptItems.map((it, i) => `
-    <div class="receipt-item-row" data-idx="${i}">
-      <input type="text" data-field="text" value="${esc(it.text)}">
-      <input type="text" data-field="quantity" value="${esc(it.quantity)}" placeholder="Menge">
-      <input type="number" data-field="calories" value="${it.calories ?? ""}" placeholder="kcal">
-      <input type="number" step="0.01" data-field="price" value="${it.price ?? ""}" placeholder="€">
-    </div>`).join("");
-  box.querySelectorAll(".receipt-item-row").forEach(row => {
-    const idx = +row.dataset.idx;
-    row.querySelectorAll("input").forEach(input => input.addEventListener("change", () => {
-      const f = input.dataset.field;
-      currentReceiptItems[idx][f] = (f === "calories" || f === "price") ? (input.value === "" ? null : +input.value) : input.value;
-    }));
-  });
+    if (on && "wakeLock" in navigator) { cookWakeLock = await navigator.wakeLock.request("screen"); }
+    else if (!on && cookWakeLock) { await cookWakeLock.release(); cookWakeLock = null; }
+  } catch (e) { /* nicht kritisch */ }
 }
-document.getElementById("saveReceiptItems").addEventListener("click", async () => {
-  if (!currentReceiptItems || !currentReceiptItems.length) return;
-  for (const it of currentReceiptItems) { if (!it.text.trim()) continue; await mutAddBacklog(it.text.trim(), it.calories, it.quantity, "receipt"); }
-  await savePricePoints(currentReceiptItems, currentReceiptStore);
-  currentReceiptItems = null; closeModal(receiptModal);
-});
 
-/* ---------- Backlog: manuell hinzufügen ---------- */
-(function initPantryAdd() {
-  const input = document.getElementById("pantryInput");
-  const commit = () => { const v = input.value.trim(); if (!v) return; input.value = ""; mutAddBacklog(v, null, "", "manual"); };
-  document.getElementById("pantryAddBtn").addEventListener("click", commit);
-  input.addEventListener("keydown", e => { if (e.key === "Enter") commit(); });
-})();
-
-/* ---------- Was kann ich kochen? (Rezeptvorschläge aus vorhandenen Zutaten) ---------- */
-(function initCook() {
-  const input = document.getElementById("cookInput");
-  const btn = document.getElementById("cookBtn");
-  const note = document.getElementById("cookNote");
-  const box = document.getElementById("cookResults");
-  if (!input || !btn) return;
-  let lastSuggestions = [];
-  function render() {
-    box.innerHTML = lastSuggestions.map((r, i) => `
-      <div class="cook-card">
-        <p class="cook-card__title">${esc(r.title)}</p>
-        <p class="cook-card__summary">${esc(r.summary || "")}</p>
-        ${(r.uses && r.uses.length) ? `<p class="cook-card__meta"><b>Nutzt:</b> ${esc(r.uses.join(", "))}</p>` : ""}
-        ${(r.missing && r.missing.length) ? `<p class="cook-card__meta"><b>Fehlt evtl.:</b> ${esc(r.missing.join(", "))}</p>` : ""}
-        <button type="button" class="btn btn--outline btn--small cook-card__save" data-save-suggestion="${i}">+ Als Rezept speichern</button>
-      </div>`).join("");
-    box.querySelectorAll("[data-save-suggestion]").forEach(b => b.addEventListener("click", async () => {
-      const r = lastSuggestions[+b.dataset.saveSuggestion]; if (!r) return;
-      b.textContent = "Gespeichert ✓"; b.disabled = true;
-      const ings = [].concat(r.uses || [], r.missing || []).map(t => ({ text: t, calories: null }));
-      try { await mutAddRecipe({ title: r.title, url: "", platform: "sonstige", thumbnail: "", calories: null }, ings, null); }
-      catch (e) { b.textContent = "+ Als Rezept speichern"; b.disabled = false; console.warn(e); }
-    }));
+function startCooking(recipeId) {
+  const r = state.recipes.find(x => String(x.id) === String(recipeId));
+  if (!r || !(r.steps && r.steps.length)) return;
+  cookState = { recipe: r, i: 0, secondsLeft: null, running: false };
+  document.getElementById("cookOverlay").hidden = false;
+  document.body.style.overflow = "hidden";
+  keepAwake(true);
+  renderCook();
+}
+function stopCooking() {
+  clearInterval(cookTick); cookTick = null;
+  cookState = null;
+  document.getElementById("cookOverlay").hidden = true;
+  document.body.style.overflow = "";
+  keepAwake(false);
+}
+function cookGo(delta) {
+  if (!cookState) return;
+  const n = cookState.recipe.steps.length;
+  const next = cookState.i + delta;
+  if (next < 0 || next >= n) return;
+  clearInterval(cookTick); cookTick = null;
+  cookState.i = next; cookState.secondsLeft = null; cookState.running = false;
+  renderCook();
+}
+function fmtTime(s) {
+  const m = Math.floor(s / 60), r = s % 60;
+  return m + ":" + String(r).padStart(2, "0");
+}
+function cookToggleTimer() {
+  if (!cookState) return;
+  const step = cookState.recipe.steps[cookState.i];
+  if (!step || !step.minutes) return;
+  if (cookState.running) {
+    clearInterval(cookTick); cookTick = null; cookState.running = false; renderCook(); return;
   }
-  const run = async () => {
-    const text = input.value.trim();
-    if (!text) { note.textContent = "Bitte ein paar Zutaten eingeben."; return; }
-    if (!FUNCTIONS_BASE) { note.textContent = "Braucht eine Supabase-Verbindung."; return; }
-    btn.disabled = true; note.textContent = "Suche passende Rezepte…";
-    try {
-      const result = await callSuggestRecipes(text);
-      lastSuggestions = result.recipes || [];
-      note.textContent = lastSuggestions.length ? `${lastSuggestions.length} Vorschläge:` : "Keine Vorschläge gefunden.";
-      render();
-    } catch (e) { note.textContent = (e && e.message) ? e.message : "Fehlgeschlagen — bitte nochmal versuchen."; console.warn(e); }
-    finally { btn.disabled = false; }
-  };
-  btn.addEventListener("click", run);
-})();
+  if (cookState.secondsLeft == null) cookState.secondsLeft = step.minutes * 60;
+  cookState.running = true;
+  cookTick = setInterval(() => {
+    if (!cookState) { clearInterval(cookTick); return; }
+    cookState.secondsLeft--;
+    if (cookState.secondsLeft <= 0) {
+      clearInterval(cookTick); cookTick = null;
+      cookState.running = false; cookState.secondsLeft = 0;
+      try { if (navigator.vibrate) navigator.vibrate([400, 200, 400]); } catch (e) {}
+      renderCook(true);
+      return;
+    }
+    const el = document.getElementById("cookTimerValue");
+    if (el) el.textContent = fmtTime(cookState.secondsLeft);
+  }, 1000);
+  renderCook();
+}
+function renderCook(done) {
+  if (!cookState) return;
+  const { recipe, i } = cookState;
+  const steps = recipe.steps || [];
+  const step = steps[i] || { text: "", minutes: null };
+  const n = steps.length;
 
-/* ---------- Notizen: Suche + Neu ---------- */
-(function initNotes() {
-  const search = document.getElementById("noteSearch");
-  const addBtn = document.getElementById("addNoteBtn");
-  if (search) search.addEventListener("input", () => { noteQuery = search.value; renderNotes(); });
-  if (addBtn) addBtn.addEventListener("click", () => mutAddNote());
+  document.getElementById("cookTitle").textContent = shortTitle(recipe.title);
+  document.getElementById("cookCount").textContent = "Schritt " + (i + 1) + " von " + n;
+  document.getElementById("cookBar").style.width = ((i + 1) / n * 100) + "%";
+  document.getElementById("cookStep").textContent = step.text;
+
+  const tWrap = document.getElementById("cookTimer");
+  if (step.minutes) {
+    tWrap.hidden = false;
+    const secs = cookState.secondsLeft == null ? step.minutes * 60 : cookState.secondsLeft;
+    document.getElementById("cookTimerValue").textContent = fmtTime(secs);
+    const btn = document.getElementById("cookTimerBtn");
+    btn.textContent = done ? "✓ Fertig" : (cookState.running ? "Pause" : (cookState.secondsLeft == null ? "Timer starten" : "Weiter"));
+    tWrap.classList.toggle("is-done", !!done);
+  } else { tWrap.hidden = true; }
+
+  document.getElementById("cookPrev").disabled = i === 0;
+  const nextBtn = document.getElementById("cookNext");
+  nextBtn.textContent = i === n - 1 ? "Fertig ✓" : "Weiter →";
+
+  const ingBox = document.getElementById("cookIngs");
+  ingBox.innerHTML = (recipe.ingredients || []).map(ing =>
+    `<li><span>${esc(ing.text)}</span>${ing.calories ? `<span class="item__calories">${ing.calories} kcal</span>` : ""}</li>`).join("")
+    || `<li><span>Keine Zutaten hinterlegt.</span></li>`;
+}
+
+(function initCook() {
+  const ov = document.getElementById("cookOverlay");
+  if (!ov) return;
+  document.getElementById("cookClose").addEventListener("click", stopCooking);
+  document.getElementById("cookPrev").addEventListener("click", () => cookGo(-1));
+  document.getElementById("cookNext").addEventListener("click", () => {
+    if (!cookState) return;
+    if (cookState.i === cookState.recipe.steps.length - 1) stopCooking(); else cookGo(1);
+  });
+  document.getElementById("cookTimerBtn").addEventListener("click", cookToggleTimer);
+  document.getElementById("cookIngsToggle").addEventListener("click", () => {
+    const b = document.getElementById("cookIngsBox");
+    b.hidden = !b.hidden;
+    document.getElementById("cookIngsToggle").textContent = b.hidden ? "Zutaten zeigen" : "Zutaten ausblenden";
+  });
+  document.addEventListener("keydown", e => {
+    if (!cookState) return;
+    if (e.key === "Escape") stopCooking();
+    if (e.key === "ArrowRight") cookGo(1);
+    if (e.key === "ArrowLeft") cookGo(-1);
+  });
 })();
 
 /* ==========================================================================
@@ -1606,246 +1567,10 @@ function renderOfferWatch() {
 })();
 
 /* ==========================================================================
-   LIVE-STANDORT TEILEN (Browser-Standort + Karte)
-   ========================================================================== */
-function getPerson() {
-  let p = null;
-  try { p = JSON.parse(localStorage.getItem("homebase_person") || "null"); } catch (e) {}
-  if (!p || !p.id) { p = { id: uid("loc_"), name: "" }; localStorage.setItem("homebase_person", JSON.stringify(p)); }
-  return p;
-}
-function setPersonName(name) { const p = getPerson(); p.name = name; localStorage.setItem("homebase_person", JSON.stringify(p)); }
-let leafletMap = null, mapMarkers = {}, watchId = null, lastLocPush = 0;
-function initMap() {
-  const el = document.getElementById("standortMap");
-  if (!el || typeof L === "undefined") return;
-  if (!leafletMap) {
-    leafletMap = L.map(el, { zoomControl: true }).setView([51.1, 10.4], 6);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(leafletMap);
-  }
-  setTimeout(() => { try { leafletMap.invalidateSize(); } catch (e) {} }, 120);
-  renderLocationMarkers();
-  ensureMarkets();
-}
-function renderLocationMarkers() {
-  if (!leafletMap || typeof L === "undefined") return;
-  const cutoff = Date.now() - 10 * 60 * 1000;
-  const active = (state.locations || []).filter(l => l.sharing && l.lat != null && l.lng != null && new Date(l.updated_at).getTime() > cutoff);
-  Object.keys(mapMarkers).forEach(id => { if (!active.find(a => a.id === id)) { leafletMap.removeLayer(mapMarkers[id]); delete mapMarkers[id]; } });
-  active.forEach(l => {
-    const label = (esc(l.name) || "Jemand") + " · " + new Date(l.updated_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-    if (mapMarkers[l.id]) mapMarkers[l.id].setLatLng([l.lat, l.lng]).setPopupContent(label);
-    else mapMarkers[l.id] = L.marker([l.lat, l.lng]).addTo(leafletMap).bindPopup(label);
-  });
-  if (active.length) {
-    try { leafletMap.fitBounds(L.featureGroup(active.map(l => mapMarkers[l.id])).getBounds().pad(0.4), { maxZoom: 15 }); } catch (e) {}
-  }
-}
-async function upsertMyLocation(lat, lng, sharing) {
-  if (!REMOTE) return;
-  const p = getPerson();
-  try { await sb.from("locations").upsert({ id: p.id, name: p.name || "Ich", lat, lng, sharing, updated_at: new Date().toISOString() }); } catch (e) { console.warn(e); }
-}
-function geoErrMsg(err) {
-  if (err && err.code === 1) return "Standort-Freigabe ist blockiert. iPhone: Einstellungen → Datenschutz & Sicherheit → Ortungsdienste einschalten und für Safari die Option 'Beim Verwenden der App' wählen. Danach die Seite neu laden.";
-  if (err && err.code === 2) return "Position gerade nicht ermittelbar (kein GPS/WLAN-Signal). Kurz warten oder ins Freie gehen.";
-  if (err && err.code === 3) return "Die Standort-Suche hat zu lange gedauert — bitte den Schalter nochmal aus- und einschalten.";
-  return "Standort nicht verfügbar — bitte die Freigabe erlauben.";
-}
-function startSharing() {
-  const note = document.getElementById("standortNote");
-  if (!navigator.geolocation) { if (note) note.textContent = "Dein Browser unterstützt keinen Standort."; return; }
-  const isStandalone = (window.navigator.standalone === true) || matchMedia("(display-mode: standalone)").matches;
-  if (note) note.textContent = "Standort wird ermittelt … bitte die Freigabe erlauben." + (isStandalone ? " Falls nichts passiert: HomeBase direkt in Safari öffnen (nicht über das Home-Bildschirm-Symbol)." : "");
-  const push = (pos, msg) => {
-    const now = Date.now();
-    if (now - lastLocPush < 12000) return;
-    lastLocPush = now;
-    upsertMyLocation(pos.coords.latitude, pos.coords.longitude, true);
-    if (note) note.textContent = msg;
-  };
-  // Sofort-Fix (schnell, ungenau erlaubt) — löst zugleich den Berechtigungsdialog aus
-  navigator.geolocation.getCurrentPosition(
-    pos => push(pos, "Du teilst deinen Standort."),
-    err => { if (note) note.textContent = geoErrMsg(err); },
-    { enableHighAccuracy: false, maximumAge: 30000, timeout: 15000 }
-  );
-  // Laufende, genauere Updates
-  watchId = navigator.geolocation.watchPosition(
-    pos => push(pos, "Du teilst deinen Standort (aktualisiert alle paar Sekunden)."),
-    err => { if (note) note.textContent = geoErrMsg(err); },
-    { enableHighAccuracy: true, maximumAge: 10000, timeout: 25000 }
-  );
-}
-function stopSharing() {
-  if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-  lastLocPush = 0;
-  upsertMyLocation(null, null, false);
-  const note = document.getElementById("standortNote");
-  if (note) note.textContent = "Standort-Teilen ist aus.";
-}
-(function initStandort() {
-  const nameInput = document.getElementById("standortName");
-  const toggle = document.getElementById("shareToggle");
-  if (!toggle) return;
-  const p = getPerson();
-  if (nameInput) {
-    nameInput.value = p.name || "";
-    nameInput.addEventListener("blur", () => setPersonName(nameInput.value.trim()));
-  }
-  toggle.addEventListener("change", () => {
-    const note = document.getElementById("standortNote");
-    if (toggle.checked) {
-      if (nameInput && !nameInput.value.trim()) { if (note) note.textContent = "Bitte zuerst deinen Namen eingeben."; toggle.checked = false; return; }
-      setPersonName(nameInput ? nameInput.value.trim() : "");
-      startSharing();
-    } else { stopSharing(); }
-  });
-})();
-
-/* ==========================================================================
-   SUPERMÄRKTE IN DER NÄHE (OpenStreetMap / Overpass)
-   ========================================================================== */
-let marketMarkers = [], marketsLoaded = false;
-function clearMarketMarkers() {
-  if (leafletMap) marketMarkers.forEach(m => { try { leafletMap.removeLayer(m); } catch (e) {} });
-  marketMarkers = [];
-}
-function haversine(la1, lo1, la2, lo2) {
-  const R = 6371000, toR = x => x * Math.PI / 180;
-  const dLa = toR(la2 - la1), dLo = toR(lo2 - lo1);
-  const a = Math.sin(dLa / 2) ** 2 + Math.cos(toR(la1)) * Math.cos(toR(la2)) * Math.sin(dLo / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-function fmtDist(m) { return m < 1000 ? (Math.round(m / 10) * 10) + " m" : (m / 1000).toFixed(1).replace(".", ",") + " km"; }
-async function loadNearbyMarkets(lat, lng) {
-  const listEl = document.getElementById("marketsList");
-  const noteEl = document.getElementById("marketsNote");
-  if (noteEl) noteEl.textContent = "Supermärkte werden gesucht…";
-  const q = '[out:json][timeout:20];(node["shop"="supermarket"](around:2500,' + lat + ',' + lng + ');way["shop"="supermarket"](around:2500,' + lat + ',' + lng + '););out center 25;';
-  try {
-    const r = await fetch("https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(q));
-    const j = await r.json();
-    const items = (j.elements || []).map(el => {
-      const la = el.lat != null ? el.lat : (el.center && el.center.lat);
-      const lo = el.lon != null ? el.lon : (el.center && el.center.lon);
-      if (la == null || lo == null) return null;
-      const name = (el.tags && (el.tags.name || el.tags.brand)) || "Supermarkt";
-      return { name, lat: la, lng: lo, dist: haversine(lat, lng, la, lo) };
-    }).filter(Boolean);
-    items.sort((a, b) => a.dist - b.dist);
-    const top = items.slice(0, 6);
-    clearMarketMarkers();
-    if (leafletMap && typeof L !== "undefined") {
-      top.forEach(m => {
-        const mk = L.circleMarker([m.lat, m.lng], { radius: 7, color: "#F6D9AC", weight: 2, fillColor: "#E5B074", fillOpacity: .9 })
-          .addTo(leafletMap).bindPopup(esc(m.name) + " · " + fmtDist(m.dist));
-        marketMarkers.push(mk);
-      });
-    }
-    if (listEl) listEl.innerHTML = top.map(m =>
-      `<div class="market-row"><span class="market-row__name"><span class="pin">📍</span><span>${esc(m.name)}</span></span><span class="market-row__dist">${fmtDist(m.dist)}</span></div>`
-    ).join("");
-    if (noteEl) noteEl.textContent = top.length ? "Quelle: OpenStreetMap · Entfernung als Luftlinie." : "Keine Supermärkte im Umkreis von 2,5 km gefunden.";
-  } catch (e) {
-    if (noteEl) noteEl.textContent = "Supermärkte konnten nicht geladen werden.";
-  }
-}
-function ensureMarkets() {
-  if (marketsLoaded) return;
-  const go = (lat, lng) => { marketsLoaded = true; loadNearbyMarkets(lat, lng); };
-  let cached = null;
-  try { cached = JSON.parse(localStorage.getItem("homebase_wx_coords") || "null"); } catch (e) {}
-  if (cached && cached.lat != null) { go(cached.lat, cached.lng); return; }
-  const noteEl = document.getElementById("marketsNote");
-  if (navigator.geolocation) {
-    if (noteEl) noteEl.textContent = "Standort wird ermittelt…";
-    navigator.geolocation.getCurrentPosition(
-      pos => { const c = { lat: pos.coords.latitude, lng: pos.coords.longitude }; localStorage.setItem("homebase_wx_coords", JSON.stringify(c)); go(c.lat, c.lng); },
-      () => { if (noteEl) noteEl.textContent = "Für Supermärkte in der Nähe bitte den Standort freigeben."; },
-      { enableHighAccuracy: false, maximumAge: 1800000, timeout: 15000 }
-    );
-  } else if (noteEl) { noteEl.textContent = "Standort wird von diesem Browser nicht unterstützt."; }
-}
-
-/* ==========================================================================
-   MINI-KARTE (Dashboard) — Leuchtroute zum nächsten Supermarkt
-   ========================================================================== */
-let homeMiniMap = null, homeMapLoaded = false;
-async function buildHomeMap(lat, lng) {
-  const el = document.getElementById("homeMiniMap");
-  const label = document.getElementById("homeMapLabel");
-  if (!el || typeof L === "undefined") return;
-  if (!homeMiniMap) {
-    homeMiniMap = L.map(el, { zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false }).setView([lat, lng], 14);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(homeMiniMap);
-  }
-  setTimeout(() => { try { homeMiniMap.invalidateSize(); } catch (e) {} }, 140);
-  L.circleMarker([lat, lng], { radius: 6, color: "#9CCBFF", weight: 2, fillColor: "#4C9BFF", fillOpacity: .95, className: "mk-glow-blue" }).addTo(homeMiniMap);
-  try {
-    const q = '[out:json][timeout:20];(node["shop"="supermarket"](around:3000,' + lat + ',' + lng + ');way["shop"="supermarket"](around:3000,' + lat + ',' + lng + '););out center 20;';
-    const r = await fetch("https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(q));
-    const j = await r.json();
-    const items = (j.elements || []).map(e2 => {
-      const la = e2.lat != null ? e2.lat : (e2.center && e2.center.lat);
-      const lo = e2.lon != null ? e2.lon : (e2.center && e2.center.lon);
-      if (la == null || lo == null) return null;
-      const name = (e2.tags && (e2.tags.name || e2.tags.brand)) || "Supermarkt";
-      return { name, lat: la, lng: lo, dist: haversine(lat, lng, la, lo) };
-    }).filter(Boolean).sort((a, b) => a.dist - b.dist);
-    if (!items.length) { if (label) label.textContent = "Kein Supermarkt in der Nähe"; homeMiniMap.setView([lat, lng], 14); return; }
-    const m = items[0];
-    L.circleMarker([m.lat, m.lng], { radius: 7, color: "#F6D9AC", weight: 2, fillColor: "#E5B074", fillOpacity: .95, className: "mk-glow-gold" }).addTo(homeMiniMap);
-    let line = null;
-    try {
-      const rr = await fetch("https://router.project-osrm.org/route/v1/walking/" + lng + "," + lat + ";" + m.lng + "," + m.lat + "?overview=full&geometries=geojson");
-      const rj = await rr.json();
-      if (rj.routes && rj.routes[0]) line = rj.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-    } catch (e) {}
-    if (!line) line = [[lat, lng], [m.lat, m.lng]];
-    L.polyline(line, { color: "#F6D9AC", weight: 8, opacity: .22, className: "route-glow" }).addTo(homeMiniMap);
-    L.polyline(line, { color: "#FBE7C2", weight: 2.5, opacity: 1, className: "route-line" }).addTo(homeMiniMap);
-    try { homeMiniMap.fitBounds(L.latLngBounds(line).pad(0.28)); } catch (e) {}
-    if (label) label.textContent = m.name + " · " + fmtDist(m.dist);
-  } catch (e) {
-    if (label) label.textContent = "Karte konnte nicht geladen werden";
-  }
-}
-function initHomeMap() {
-  if (homeMapLoaded) return;
-  let cached = null;
-  try { cached = JSON.parse(localStorage.getItem("homebase_wx_coords") || "null"); } catch (e) {}
-  if (cached && cached.lat != null) { homeMapLoaded = true; buildHomeMap(cached.lat, cached.lng); return; }
-  const label = document.getElementById("homeMapLabel");
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      pos => { const c = { lat: pos.coords.latitude, lng: pos.coords.longitude }; localStorage.setItem("homebase_wx_coords", JSON.stringify(c)); homeMapLoaded = true; buildHomeMap(c.lat, c.lng); },
-      () => { if (label) label.textContent = "Standort freigeben für die Route"; },
-      { enableHighAccuracy: false, maximumAge: 1800000, timeout: 15000 }
-    );
-  } else if (label) { label.textContent = "Standort nicht unterstützt"; }
-}
-
-/* ==========================================================================
    PREIS-DATENBANK + KOSTENSCHÄTZUNG
    ========================================================================== */
 let currentReceiptStore = "Edeka";
 
-async function savePricePoints(items, store) {
-  if (!REMOTE || !Array.isArray(items)) return;
-  const rows = items
-    .filter(it => it && it.text && it.text.trim() && it.price != null && !isNaN(it.price) && +it.price > 0)
-    .map(it => ({
-      name: it.text.trim(),
-      name_key: mKeyName(parseItemText(it.text.trim()).name),
-      price: +(+it.price).toFixed(2),
-      quantity: it.quantity || null,
-      store: store || "Edeka",
-      source: "receipt"
-    }));
-  if (!rows.length) return;
-  try { await sb.from("price_points").insert(rows); } catch (e) { console.warn("price_points:", e); }
-}
 
 async function loadKnownPrices(texts) {
   if (!REMOTE) return [];
@@ -2336,6 +2061,21 @@ async function chatSend(text) {
   }
 
   /* Nährwerttabelle abfotografieren -> eigenes Lebensmittel */
+  const shot = document.getElementById("importShot");
+  if (shot) shot.addEventListener("change", async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const n = document.getElementById("caloriesNote");
+    if (!FUNCTIONS_BASE) { n.textContent = "Braucht eine Supabase-Verbindung."; return; }
+    n.textContent = "Lese das Bildschirmfoto…";
+    try {
+      const base64 = await fileToBase64(file);
+      const extra = (document.getElementById("importCaption") || {}).value || "";
+      const result = await callExtractIngredients(extra.trim(), base64, file.type || "image/jpeg");
+      applyExtraction(result, n);
+    } catch (err) { n.textContent = (err && err.message) ? err.message : "Bild konnte nicht gelesen werden."; console.warn(err); }
+    finally { shot.value = ""; }
+  });
+
   const lbl = document.getElementById("foodLabelPhoto");
   if (lbl) lbl.addEventListener("change", async e => {
     const file = e.target.files[0]; if (!file) return;
@@ -2373,53 +2113,98 @@ async function chatSend(text) {
 })();
 
 /* ==========================================================================
-   MHD (Mindesthaltbarkeit) — Backlog + Kalender
+   WOCHENREZEPTE IN EINE LISTE UEBERNEHMEN
    ========================================================================== */
-const SHELF_LIFE = [
-  [/hackfleisch|mett|gehacktes/i, 1],
-  [/h[äa]hnchen|h[üu]hn|pute|truthahn|gefl[üu]gel/i, 2],
-  [/fisch|lachs|forelle|garnel|shrimp|thunfisch frisch/i, 2],
-  [/steak|rind|schwein|kalb|lamm|schnitzel|kotelett|gulasch|braten/i, 3],
-  [/wurst|aufschnitt|schinken|salami|speck|bacon/i, 5],
-  [/salat|rucola|spinat|kr[äa]uter|basilikum|petersilie/i, 4],
-  [/milch|sahne|schlagobers/i, 7],
-  [/joghurt|quark|skyr|frischk[äa]se/i, 10],
-  [/k[äa]se/i, 14],
-  [/ei\b|eier/i, 21],
-  [/brot|br[öo]tchen|toast/i, 4],
-  [/beere|himbeer|erdbeer|heidelbeer/i, 3],
-  [/obst|apfel|banane|birne|gem[üu]se|paprika|gurke|tomate|karotte|m[öo]hre/i, 6],
-];
-function suggestExpiry(text) {
-  const t = String(text || "");
-  for (const [re, days] of SHELF_LIFE) if (re.test(t)) return addDaysISO(todayISO(), days);
-  return null;
+function weekDaysShown() {
+  if (calView === "day") return [calAnchor];
+  if (calView === "month") {
+    const fom = firstOfMonthISO(calAnchor);
+    return Array.from({ length: 31 }, (_, i) => addDaysISO(fom, i))
+      .filter(d => d.slice(0, 7) === fom.slice(0, 7));
+  }
+  const start = mondayOfISO(calAnchor);
+  return Array.from({ length: 7 }, (_, i) => addDaysISO(start, i));
 }
-function daysUntil(iso) {
-  if (!iso) return null;
-  return Math.round((new Date(iso + "T00:00:00") - new Date(todayISO() + "T00:00:00")) / 86400000);
+function openWeekImport() {
+  const days = weekDaysShown();
+  const box = document.getElementById("weekDays");
+  const sel = document.getElementById("weekList");
+  const note = document.getElementById("weekNote");
+  if (!box || !sel) return;
+  note.textContent = "";
+
+  const rows = days.map(iso => {
+    const entries = (state.calendar || []).filter(e => e.plan_date === iso && e.meal);
+    if (!entries.length) return "";
+    const d = new Date(iso + "T00:00:00");
+    return `<label class="week-day">
+      <input type="checkbox" data-week-day="${iso}" checked>
+      <span class="week-day__name">${d.toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "2-digit" })}</span>
+      <span class="week-day__meals">${entries.map(e => esc(shortTitle(e.meal))).join(", ")}</span>
+    </label>`;
+  }).filter(Boolean).join("");
+
+  box.innerHTML = rows || `<p class="section__desc">In diesem Zeitraum ist nichts geplant.</p>`;
+  sel.innerHTML = activeLists().map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join("")
+    || `<option value="">Keine aktive Liste</option>`;
+  openModal(document.getElementById("weekModal"));
 }
-function mhdBadge(it) {
-  const d = daysUntil(it.expires_at);
-  const cls = d == null ? "" : (d < 0 ? "is-over" : (d <= 2 ? "is-soon" : ""));
-  const label = d == null ? "MHD" : (d < 0 ? "abgelaufen" : (d === 0 ? "heute" : (d === 1 ? "morgen" : "in " + d + " T")));
-  return `<span class="mhd ${cls}"><span class="mhd__label">${label}</span><input type="date" class="mhd__input" data-mhd="${it.id}" value="${it.expires_at || ""}" aria-label="Mindesthaltbarkeit"></span>`;
+async function runWeekImport() {
+  const note = document.getElementById("weekNote");
+  const listId = document.getElementById("weekList").value;
+  if (!listId) { note.textContent = "Bitte eine Liste anlegen."; return; }
+  const days = [...document.querySelectorAll("[data-week-day]")].filter(c => c.checked).map(c => c.dataset.weekDay);
+  if (!days.length) { note.textContent = "Bitte mindestens einen Tag auswählen."; return; }
+
+  // Zutaten aller geplanten Rezepte dieser Tage sammeln, Doppelte zusammenfassen
+  const sammeln = [];
+  days.forEach(iso => {
+    (state.calendar || []).filter(e => e.plan_date === iso && e.recipe_id).forEach(e => {
+      const r = state.recipes.find(x => x.id === e.recipe_id);
+      (r && r.ingredients ? r.ingredients : []).forEach(ing => sammeln.push(ing));
+    });
+  });
+  if (!sammeln.length) { note.textContent = "Zu den gewählten Tagen sind keine Rezepte mit Zutaten hinterlegt."; return; }
+
+  const zusammen = [];
+  sammeln.forEach(ing => {
+    const n = mKeyName(parseItemText(ing.text).name);
+    const vorhanden = zusammen.find(x => mKeyName(parseItemText(x.text).name) === n);
+    if (vorhanden) {
+      const neu = mergedText(parseItemText(vorhanden.text), parseItemText(ing.text));
+      if (neu) { vorhanden.text = neu; vorhanden.calories = (vorhanden.calories || 0) + (ing.calories || 0); return; }
+    }
+    zusammen.push({ text: ing.text, calories: ing.calories || null });
+  });
+
+  note.textContent = `Sortiere ${zusammen.length} Zutaten ein…`;
+  try {
+    let assignments = [];
+    if (FUNCTIONS_BASE) {
+      const result = await callSortItems(zusammen.map(i => i.text), catsOfList(listId).map(c => c.name));
+      assignments = result.assignments || [];
+    }
+    await mutImportToList(listId, zusammen, assignments);
+    const listName = (getList(listId) || {}).name || "";
+    note.textContent = `${zusammen.length} Zutaten in „${listName}" übernommen.`;
+    setTimeout(() => closeModal(document.getElementById("weekModal")), 1200);
+  } catch (e) { note.textContent = "Übernehmen fehlgeschlagen — bitte nochmal."; console.warn(e); }
 }
-async function mutSetExpiry(id, iso) {
-  if (REMOTE) { await sb.from("backlog_items").update({ expires_at: iso }).eq("id", id); await remoteFetchAll(); }
-  else { const it = state.backlog.find(b => String(b.id) === String(id)); if (it) it.expires_at = iso; localSave(); }
-  renderAll();
-}
-function expiringOn(iso) { return (state.backlog || []).filter(b => b.expires_at === iso && !b.checked); }
-function expiryHTML(iso) {
-  const list = expiringOn(iso);
-  if (!list.length) return "";
-  const over = new Date(iso + "T00:00:00") < new Date(todayISO() + "T00:00:00");
-  return `<div class="cal-mhd ${over ? "is-over" : ""}">
-    <span class="cal-mhd__label">${over ? "⚠️ abgelaufen" : "⏳ läuft ab"}</span>
-    ${list.map(b => `<span class="cal-mhd__item">${esc(b.text)}</span>`).join("")}
-  </div>`;
-}
+(function initWeekImport() {
+  const btn = document.getElementById("weekImportBtn");
+  if (!btn) return;
+  const modal = document.getElementById("weekModal");
+  btn.addEventListener("click", openWeekImport);
+  document.getElementById("closeWeekModal").addEventListener("click", () => closeModal(modal));
+  modal.addEventListener("click", e => { if (e.target === modal) closeModal(modal); });
+  document.getElementById("weekAll").addEventListener("click", () => {
+    const boxes = [...document.querySelectorAll("[data-week-day]")];
+    const alleAn = boxes.every(b => b.checked);
+    boxes.forEach(b => { b.checked = !alleAn; });
+    document.getElementById("weekAll").textContent = alleAn ? "Alle auswählen" : "Alle abwählen";
+  });
+  document.getElementById("weekRun").addEventListener("click", runWeekImport);
+})();
 
 /* ==========================================================================
    SCROLL-EFFEKTE
@@ -2500,7 +2285,6 @@ function initHomeHead() {
   updateHomeClock();
   setInterval(updateHomeClock, 20000);
   initWeather();
-  initHomeMap();
 }
 
 /* ==========================================================================
