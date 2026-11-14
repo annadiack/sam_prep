@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Wochenplan &amp; Einkaufsliste</title>
+<title>Sam Prep &mdash; Rezepte, Einkaufsliste, N&auml;hrwerte</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Marcellus&family=Jost:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
@@ -15,7 +15,7 @@
 <link rel="manifest" href="manifest.json?v=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="HomeBase">
+<meta name="apple-mobile-web-app-title" content="Sam Prep">
 <meta name="theme-color" content="#C6A46A">
 <style>
 /* ===== style.css fest eingebettet ===== */
@@ -207,22 +207,7 @@ button{ font-family:var(--font-body); cursor:pointer; }
 .cook-card__save{ margin-top:10px; }
 .recipe-import-row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px; }
 .recipe-import-row select{ flex:1; min-width:120px; font-family:var(--font-body); font-size:12.5px; padding:8px; border-radius:var(--radius-sm); border:1px solid var(--stroke); background:#241a12; color:var(--text); }
-.prospekt-land{ margin-top:8px; }
-.prospekt-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:14px; margin:20px 0; }
-.prospekt-card{ display:flex; flex-direction:column; gap:8px; background:var(--glass); border:1px solid var(--stroke); border-radius:var(--radius-md); box-shadow:var(--shadow-widget); backdrop-filter:var(--blur); -webkit-backdrop-filter:var(--blur); padding:20px 18px; }
-.prospekt-card__name{ font-family:var(--font-display); font-size:19px; color:var(--text); }
-.prospekt-card__go{ font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--gold-bright); }
-.prospekt-links{ display:flex; flex-direction:column; gap:2px; margin-top:14px; }
-.prospekt-link{ display:inline-block; font-size:14.5px; color:var(--gold-bright); font-weight:500; padding:10px 0; border-bottom:1px solid var(--stroke-2); }
-.prospekt-link:last-child{ border-bottom:none; }
-.angebot-results{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-.angebot-results[hidden]{ display:none; }
-.angebot-results a{ display:inline-flex; align-items:center; gap:4px; padding:9px 14px; border-radius:999px; background:var(--glass-soft); border:1px solid var(--stroke); color:var(--text); font-size:13.5px; font-weight:500; text-decoration:none; }
 .ar-label{ width:100%; font-size:12px; color:var(--text-dim); margin-bottom:2px; }
-.angebot-watch{ display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
-.watch-chip{ display:inline-flex; align-items:center; gap:4px; padding:5px 5px 5px 13px; border-radius:999px; background:var(--glass-soft); border:1px solid var(--stroke); font-size:13.5px; }
-.watch-chip .wc-name{ cursor:pointer; font-weight:500; color:var(--text); }
-.watch-chip button{ border:none; background:none; color:var(--text-dim); font-size:16px; line-height:1; width:24px; height:24px; border-radius:50%; cursor:pointer; }
 .modal-overlay{ position:fixed; inset:0; z-index:500; background:rgba(12,8,5,.6); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; padding:24px; }
 .modal-overlay[hidden]{ display:none; }
 .modal{ position:relative; width:100%; max-width:480px; max-height:86vh; overflow-y:auto; background:rgba(34,25,17,.9); color:var(--text); border-radius:var(--radius-lg); border:1px solid var(--stroke); backdrop-filter:var(--blur); -webkit-backdrop-filter:var(--blur); padding:38px 34px 32px; box-shadow:0 60px 120px rgba(0,0,0,.6); }
@@ -478,6 +463,41 @@ button{ font-family:var(--font-body); cursor:pointer; }
 .ingredient-calories{ margin-top:10px; display:flex; flex-direction:column; gap:4px; }
 .ingredient-calories__row{ display:flex; justify-content:space-between; font-size:13px; padding:3px 0; border-bottom:1px solid var(--stroke-2); color:var(--text-soft); }
 .ingredient-calories__row span:last-child{ color:var(--gold-bright); font-weight:500; }
+
+/* ---------- LOGIN ---------- */
+body.is-locked{ overflow:hidden; }
+body.is-locked #topNav,
+body.is-locked .panel,
+body.is-locked .scroll-progress{ display:none !important; }
+.auth-gate{ position:fixed; inset:0; z-index:9000; display:flex; align-items:center;
+  justify-content:center; padding:24px; }
+.auth-card{ width:100%; max-width:420px; padding:34px 28px 30px;
+  background:var(--glass); border:1px solid var(--stroke);
+  box-shadow:0 0 0 1px rgba(240,206,154,.12), 0 30px 80px rgba(0,0,0,.55);
+  backdrop-filter:blur(18px) saturate(120%); -webkit-backdrop-filter:blur(18px) saturate(120%); }
+.auth-card__title{ font-family:"Marcellus",serif; font-size:30px; line-height:1.15;
+  margin:6px 0 12px; color:var(--gold-bright); text-shadow:0 0 18px rgba(240,206,154,.35); }
+.auth-card__lead{ font-size:14px; line-height:1.55; color:var(--text-soft); margin:0 0 22px; }
+.auth-label{ display:block; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--text-soft); margin-bottom:7px; }
+.auth-input{ width:100%; padding:13px 14px; font-size:16px; color:var(--text);
+  background:var(--glass-soft); border:1px solid var(--stroke); border-radius:0; }
+.auth-input:focus{ outline:none; border-color:var(--gold-bright);
+  box-shadow:0 0 0 1px rgba(240,206,154,.35); }
+.auth-btn{ width:100%; margin-top:14px; }
+.auth-note{ min-height:19px; margin:12px 0 0; font-size:13px; line-height:1.45; color:var(--gold-bright); }
+.auth-hint{ margin:16px 0 0; font-size:11.5px; line-height:1.5; color:rgba(245,237,228,.5); }
+.nav__who{ font-size:11px; letter-spacing:.06em; color:rgba(245,237,228,.5);
+  max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nav__logout{ font-size:10.5px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--text-soft); background:none; border:1px solid var(--stroke);
+  padding:6px 11px; cursor:pointer; }
+.nav__logout:hover{ color:var(--gold-bright); border-color:var(--gold-bright); }
+@media (max-width:720px){
+  .nav__who{ display:none; }
+  .auth-card{ padding:26px 20px 24px; }
+  .auth-card__title{ font-size:25px; }
+}
 </style>
 </head>
 <body>
@@ -498,9 +518,28 @@ button{ font-family:var(--font-body); cursor:pointer; }
 
 <nav class="widget widget--nav" id="topNav">
   <button type="button" class="nav__back" id="backBtn" hidden aria-label="Zurueck">&larr; Uebersicht</button>
-  <span class="nav__mark">Plane wie ein Psycho.</span>
+  <span class="nav__mark">Sam Prep</span>
   <span class="sync-badge" id="syncBadge">&#9675; verbinde&hellip;</span>
+  <span class="nav__who" id="authWho"></span>
+  <button type="button" class="nav__logout" id="logoutBtn">Abmelden</button>
 </nav>
+
+<!-- ================= LOGIN ================= -->
+<div class="auth-gate" id="authGate" hidden>
+  <div class="auth-card">
+    <p class="eyebrow">Sam Prep</p>
+    <h1 class="auth-card__title">Kochen ohne Chaos.</h1>
+    <p class="auth-card__lead">Rezepte aus TikTok und Instagram holen, Woche planen,
+      Einkaufsliste automatisch f&uuml;llen und N&auml;hrwerte mitz&auml;hlen.</p>
+    <label class="auth-label" for="authEmail">Deine E-Mail-Adresse</label>
+    <input type="email" id="authEmail" class="auth-input" placeholder="du@beispiel.de"
+           autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false">
+    <button type="button" class="btn btn--gold auth-btn" id="authSend">Link senden</button>
+    <p class="auth-note" id="authNote"></p>
+    <p class="auth-hint">Kein Passwort n&ouml;tig. Du bekommst eine Mail mit einem Link,
+      der dich direkt anmeldet. Beim ersten Mal wird dein Konto dabei angelegt.</p>
+  </div>
+</div>
 
 <!-- ================= LANDING ================= -->
 <header class="panel view view--hero is-active" id="view-dashboard">
@@ -523,7 +562,7 @@ button{ font-family:var(--font-body); cursor:pointer; }
           </div>
         </div>
       </div>
-      <p class="eyebrow">Wochenplan &amp; Einkaufsliste</p>
+      <p class="eyebrow">Rezepte, Plan &amp; N&auml;hrwerte</p>
       <h1 class="hero__title">Was steht heute an?</h1>
       <p class="lead">W&auml;hle einen Bereich.</p>
       <div class="hero-tiles">
@@ -541,11 +580,6 @@ button{ font-family:var(--font-body); cursor:pointer; }
           <span class="hero-tile__icon">&#129367;</span>
           <span class="hero-tile__title">Tracker</span>
           <span class="hero-tile__meta" id="tileTrackerMeta">&ndash;</span>
-        </button>
-        <button type="button" class="hero-tile" data-open-view="prospekte">
-          <span class="hero-tile__icon">&#127991;&#65039;</span>
-          <span class="hero-tile__title">Prospekte</span>
-          <span class="hero-tile__meta">Angebote der Woche</span>
         </button>
       </div>
     </div>
@@ -754,40 +788,6 @@ button{ font-family:var(--font-body); cursor:pointer; }
   </div>
 </section>
 
-<!-- ================= PROSPEKTE ================= -->
-<section class="panel view" id="view-prospekte">
-  <div class="bg" data-speed="0.14"></div>
-  <div class="veil"></div>
-  <div class="panel__content">
-    <div class="widget widget--head reveal">
-      <p class="eyebrow">Prospekte &amp; Angebote</p>
-      <h2 class="section__title">Aktuelle Prospekte.</h2>
-      <p class="section__desc">Direkt zu den Wochenprospekten. F&uuml;r deinen lokalen Markt und deine PLZ nutze Marktguru/kaufDA weiter unten.</p>
-      <div class="cal-viewswitch prospekt-land">
-        <button type="button" data-land="de" class="is-active">Deutschland</button>
-        <button type="button" data-land="ch">Schweiz</button>
-      </div>
-    </div>
-    <div class="widget reveal">
-      <h3 class="recipes-title">Angebot f&uuml;r eine Zutat finden</h3>
-      <p class="section__desc">Zutat eingeben und &bdquo;Suchen&ldquo; &mdash; du bekommst pro Anbieter (Marktguru, kaufDA, Google) einen Button zu den aktuellen Angeboten. &bdquo;Merken&ldquo; legt die Zutat auf deine Beobachtungsliste (auf diesem Ger&auml;t).</p>
-      <div class="add-category-row">
-        <input type="search" id="angebotInput" placeholder="z.B. Eier, Butter, Kaffee&hellip;" aria-label="Angebot suchen">
-        <button type="button" id="angebotBtn" class="btn btn--gold btn--small">Suchen &#8599;</button>
-        <button type="button" id="angebotWatchBtn" class="btn btn--outline btn--small">+ Merken</button>
-      </div>
-      <div class="angebot-results" id="angebotResults" hidden></div>
-      <div class="angebot-watch" id="angebotWatch"></div>
-    </div>
-    <div class="prospekt-grid" id="prospekteGrid"></div>
-    <div class="widget reveal">
-      <h3 class="recipes-title">Lokaler Markt &amp; PLZ</h3>
-      <p class="section__desc">Hier w&auml;hlst du Markt und Postleitzahl f&uuml;r Angebote im Umkreis:</p>
-      <div class="prospekt-links" id="prospekteAggr"></div>
-    </div>
-  </div>
-</section>
-
 <!-- ================= MODAL: REZEPT IMPORTIEREN ================= -->
 <div class="modal-overlay" id="importModal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
@@ -891,8 +891,8 @@ button{ font-family:var(--font-body); cursor:pointer; }
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="config.js?v=45"></script>
-<script src="script.js?v=45"></script>
+<script src="config.js?v=1"></script>
+<script src="script.js?v=1"></script>
 <script src="linkify.js?v=1"></script>
 </body>
 </html>

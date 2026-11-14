@@ -2,7 +2,7 @@
    SAM PREP — Verbindung zum eigenen Supabase-Projekt
    Projekt: sam_prep (qmrwrhjakchwmptwatbd), Region Frankfurt
    Dieser Schluessel darf oeffentlich sein: er erlaubt nur, was die
-   RLS-Regeln erlauben, und die geben jedem Konto ausschliesslich
+   RLS-Regeln zulassen, und die geben jedem Konto ausschliesslich
    die eigenen Zeilen.
    ========================================================================== */
 window.APP_CONFIG = {

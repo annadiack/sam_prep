@@ -1,5 +1,6 @@
 /* ==========================================================================
-   HOMEBASE — Mehrere Einkaufslisten · Kalender (mehrere Rezepte/Tag) · Backlog
+   SAM PREP — Einkaufsliste · Wochenplan mit Rezepten · Nährwert-Tracker
+   Mehrbenutzer: Login per Magic Link, jedes Konto sieht nur eigene Daten.
    ========================================================================== */
 
 const DEFAULT_CATS = ["Obst & Gemüse", "Gläser & Konserven", "Kräuter & Gewürze", "Getreide", "Milchprodukte", "TK", "Getränke"];
@@ -55,7 +56,7 @@ if (window.supabase && cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY) {
 }
 const REMOTE = !!sb;
 const FUNCTIONS_BASE = cfg.SUPABASE_URL ? `${cfg.SUPABASE_URL}/functions/v1` : "";
-const STORAGE_KEY = "homebase_state_v7";
+const STORAGE_KEY = "samprep_state_v1";
 
 let state = { lists: [], categories: [], shopping: [], calendar: [], recipes: [], foodLog: [], goals: null, foods: [] };
 let trackerDate = null;
@@ -72,7 +73,7 @@ let calAnchor = todayISO();
 let expandedCal = null;
 
 /* View-Navigation (Eltern für Zurück-Button) */
-const VIEW_PARENT = { lists: "dashboard", listdetail: "lists", calendar: "dashboard", prospekte: "dashboard", tracker: "dashboard" };
+const VIEW_PARENT = { lists: "dashboard", listdetail: "lists", calendar: "dashboard", tracker: "dashboard" };
 let currentView = "dashboard";
 
 /* ---------- Lokal-Modus ---------- */
@@ -412,8 +413,18 @@ async function mutDeleteRecipe(id) {
 }
 
 /* ==========================================================================
-   KI-FUNKTIONEN (Kassenzettel-Scan + Kalorienschätzung, via Claude)
+   KI-FUNKTIONEN (via Claude, als Supabase Edge Functions)
    ========================================================================== */
+/* Edge Functions mit dem Token des angemeldeten Kontos aufrufen.
+   Faellt auf den oeffentlichen Schluessel zurueck, solange keine Sitzung steht. */
+let fnToken = null;
+function fnHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "apikey": cfg.SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + (fnToken || cfg.SUPABASE_ANON_KEY)
+  };
+}
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -422,19 +433,10 @@ function fileToBase64(file) {
     reader.readAsDataURL(file);
   });
 }
-async function callScanReceipt(base64, mimeType) {
-  const res = await fetch(`${FUNCTIONS_BASE}/scan-receipt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
-    body: JSON.stringify({ image: base64, mimeType }),
-  });
-  if (!res.ok) throw new Error("scan-receipt " + res.status);
-  return res.json();
-}
 async function callEstimateCalories(items) {
   const res = await fetch(`${FUNCTIONS_BASE}/estimate-calories`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify({ items }),
   });
   if (!res.ok) throw new Error("estimate-calories " + res.status);
@@ -443,7 +445,7 @@ async function callEstimateCalories(items) {
 async function callExtractIngredients(text, image, mimeType) {
   const res = await fetch(`${FUNCTIONS_BASE}/extract-ingredients`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify(image ? { text, image, mimeType } : { text }),
   });
   if (!res.ok) {
@@ -456,7 +458,7 @@ async function callExtractIngredients(text, image, mimeType) {
 async function callSortItem(text, categories) {
   const res = await fetch(`${FUNCTIONS_BASE}/sort-item`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify({ text, categories }),
   });
   if (!res.ok) throw new Error("sort-item " + res.status);
@@ -465,7 +467,7 @@ async function callSortItem(text, categories) {
 async function callSuggestRecipes(ingredients) {
   const res = await fetch(`${FUNCTIONS_BASE}/suggest-recipes`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify({ ingredients }),
   });
   if (!res.ok) throw new Error("suggest-recipes " + res.status);
@@ -474,7 +476,7 @@ async function callSuggestRecipes(ingredients) {
 async function callSortItems(items, categories) {
   const res = await fetch(`${FUNCTIONS_BASE}/sort-items`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify({ items, categories }),
   });
   if (!res.ok) throw new Error("sort-items " + res.status);
@@ -1161,7 +1163,7 @@ async function fetchLinkMeta(url) {
   if (!FUNCTIONS_BASE) throw new Error("keine Verbindung");
   const res = await fetch(`${FUNCTIONS_BASE}/fetch-link`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify({ url }),
   });
   if (!res.ok) throw new Error("fetch-link " + res.status);
@@ -1453,144 +1455,21 @@ function renderCook(done) {
 })();
 
 /* ==========================================================================
-   PROSPEKTE (Direkt-Links, DE/CH)
-   ========================================================================== */
-const PROSPEKTE = {
-  de: {
-    maerkte: [
-      { name: "Edeka", url: "https://www.edeka.de/angebote/angebote.jsp" },
-      { name: "Rewe", url: "https://www.rewe.de/angebote/" },
-      { name: "Lidl", url: "https://www.lidl.de/c/online-prospekte/s10007366" },
-      { name: "Aldi Süd", url: "https://www.aldi-sued.de/de/angebote.html" },
-      { name: "Aldi Nord", url: "https://www.aldi-nord.de/angebote.html" },
-      { name: "Penny", url: "https://www.penny.de/angebote" },
-      { name: "Kaufland", url: "https://www.kaufland.de/angebote/aktuelle-woche.html" },
-      { name: "Netto", url: "https://www.netto-online.de/filialangebote" },
-    ],
-    aggregatoren: [
-      { name: "Marktguru — alle Märkte, per PLZ", url: "https://www.marktguru.de/prospekte" },
-      { name: "kaufDA — Prospekte per PLZ", url: "https://www.kaufda.de/" },
-    ],
-  },
-  ch: {
-    maerkte: [
-      { name: "Migros", url: "https://www.migros.ch/de/aktionen" },
-      { name: "Coop", url: "https://www.coop.ch/de/angebote.html" },
-      { name: "Aldi Suisse", url: "https://www.aldi-suisse.ch/de/aktionen.html" },
-      { name: "Lidl Schweiz", url: "https://www.lidl.ch/c/prospekte/s10020843" },
-      { name: "Denner", url: "https://www.denner.ch/de/aktionen/" },
-    ],
-    aggregatoren: [
-      { name: "Marktguru CH — alle Märkte, per PLZ", url: "https://www.marktguru.ch/prospekte" },
-      { name: "Profital — Prospekte per Ort", url: "https://www.profital.ch/de" },
-    ],
-  },
-};
-let prospekteLand = localStorage.getItem("homebase_prospekte_land") || "de";
-function renderProspekte() {
-  const grid = document.getElementById("prospekteGrid");
-  const aggr = document.getElementById("prospekteAggr");
-  if (!grid) return;
-  document.querySelectorAll("[data-land]").forEach(b => b.classList.toggle("is-active", b.dataset.land === prospekteLand));
-  const data = PROSPEKTE[prospekteLand];
-  grid.innerHTML = data.maerkte.map(m => `<a class="prospekt-card" href="${m.url}" target="_blank" rel="noopener"><span class="prospekt-card__name">${esc(m.name)}</span><span class="prospekt-card__go">Prospekt ansehen ↗</span></a>`).join("");
-  if (aggr) aggr.innerHTML = data.aggregatoren.map(m => `<a class="prospekt-link" href="${m.url}" target="_blank" rel="noopener">${esc(m.name)} ↗</a>`).join("");
-}
-document.querySelectorAll("[data-land]").forEach(b => b.addEventListener("click", () => {
-  prospekteLand = b.dataset.land; localStorage.setItem("homebase_prospekte_land", prospekteLand); renderProspekte();
-  const input = document.getElementById("angebotInput");
-  if (input && input.value.trim()) renderOfferResults(input.value);
-}));
-
-/* ---- Angebotssuche pro Anbieter + Merkliste (gerätelokal) ---- */
-const OFFER_WATCH_KEY = "homebase_watch_offers";
-function getWatch() { try { return JSON.parse(localStorage.getItem(OFFER_WATCH_KEY) || "[]"); } catch (e) { return []; } }
-function saveWatch(arr) { localStorage.setItem(OFFER_WATCH_KEY, JSON.stringify(arr)); }
-function offerProviders(q) {
-  const g = prospekteLand === "ch" ? "https://www.google.ch/search?q=" : "https://www.google.de/search?q=";
-  const e = s => encodeURIComponent(s);
-  if (prospekteLand === "ch") {
-    return [
-      { label: "Marktguru", url: g + e("site:marktguru.ch " + q + " angebot") },
-      { label: "Profital", url: g + e("site:profital.ch " + q) },
-      { label: "Google Angebote", url: g + e(q + " angebot prospekt schweiz") },
-    ];
-  }
-  return [
-    { label: "Marktguru", url: g + e("site:marktguru.de " + q + " angebot") },
-    { label: "kaufDA", url: g + e("site:kaufda.de " + q + " angebot") },
-    { label: "Google Angebote", url: g + e(q + " angebot prospekt supermarkt") },
-  ];
-}
-function renderOfferResults(q) {
-  const box = document.getElementById("angebotResults");
-  if (!box) return;
-  q = (q || "").trim();
-  if (!q) { box.hidden = true; box.innerHTML = ""; return; }
-  const links = offerProviders(q).map(p => `<a href="${p.url}" target="_blank" rel="noopener noreferrer">${esc(p.label)} ↗</a>`).join("");
-  box.hidden = false;
-  box.innerHTML = `<span class="ar-label">Angebote für „${esc(q)}" öffnen:</span>` + links;
-}
-function renderOfferWatch() {
-  const box = document.getElementById("angebotWatch");
-  if (!box) return;
-  const arr = getWatch();
-  if (!arr.length) { box.innerHTML = ""; return; }
-  box.innerHTML = `<span class="ar-label">Beobachtete Zutaten (auf diesem Gerät):</span>` + arr.map((q, i) =>
-    `<span class="watch-chip"><span class="wc-name" data-watch-idx="${i}">${esc(q)}</span><button type="button" data-watch-del="${i}" aria-label="Entfernen">×</button></span>`
-  ).join("");
-  box.querySelectorAll("[data-watch-idx]").forEach(el => el.addEventListener("click", () => {
-    const q = getWatch()[+el.dataset.watchIdx]; if (q == null) return;
-    const input = document.getElementById("angebotInput"); if (input) input.value = q;
-    renderOfferResults(q);
-  }));
-  box.querySelectorAll("[data-watch-del]").forEach(el => el.addEventListener("click", () => {
-    const arr2 = getWatch(); arr2.splice(+el.dataset.watchDel, 1); saveWatch(arr2); renderOfferWatch();
-  }));
-}
-(function initAngebotSearch() {
-  const input = document.getElementById("angebotInput");
-  const btn = document.getElementById("angebotBtn");
-  const watchBtn = document.getElementById("angebotWatchBtn");
-  if (!input || !btn) return;
-  const search = () => { const q = input.value.trim(); if (!q) return; renderOfferResults(q); };
-  const remember = () => {
-    const q = input.value.trim(); if (!q) return;
-    const arr = getWatch();
-    if (!arr.some(x => x.toLowerCase() === q.toLowerCase())) { arr.push(q); saveWatch(arr); }
-    renderOfferWatch(); renderOfferResults(q);
-  };
-  btn.addEventListener("click", search);
-  input.addEventListener("keydown", e => { if (e.key === "Enter") search(); });
-  if (watchBtn) watchBtn.addEventListener("click", remember);
-  renderOfferWatch();
-})();
-
-/* ==========================================================================
    PREIS-DATENBANK + KOSTENSCHÄTZUNG
    ========================================================================== */
 let currentReceiptStore = "Edeka";
 
 
 async function loadKnownPrices(texts) {
-  if (!REMOTE) return [];
-  const keys = [...new Set(texts.map(t => mKeyName(parseItemText(t).name)).filter(Boolean))];
-  if (!keys.length) return [];
-  try {
-    const { data } = await sb.from("price_points").select("name,name_key,price,quantity").in("name_key", keys).limit(400);
-    const byKey = {};
-    (data || []).forEach(r => {
-      if (!byKey[r.name_key]) byKey[r.name_key] = { name: r.name, quantity: r.quantity, sum: 0, n: 0 };
-      byKey[r.name_key].sum += Number(r.price); byKey[r.name_key].n++;
-    });
-    return Object.values(byKey).map(v => ({ name: v.name, quantity: v.quantity, price: +(v.sum / v.n).toFixed(2) }));
-  } catch (e) { console.warn(e); return []; }
+  // In Sam Prep gibt es keine Kassenzettel und damit keine Preis-Historie.
+  // Die Schaetzung laeuft allein ueber Claude.
+  return [];
 }
 
 async function callEstimateCosts(texts, store, known) {
   const res = await fetch(`${FUNCTIONS_BASE}/estimate-costs`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify({ items: texts, store, known }),
   });
   if (!res.ok) throw new Error("estimate-costs " + res.status);
@@ -1684,7 +1563,15 @@ async function mutDeleteFood(id) {
   renderAll();
 }
 async function mutSaveGoals(g) {
-  if (REMOTE) { await sb.from("nutrition_goals").upsert({ id: "default", ...g, updated_at: new Date().toISOString() }); await remoteFetchAll(); }
+  if (REMOTE) {
+    // Primaerschluessel ist (user_id, id) - beide Spalten muessen mitkommen,
+    // damit Postgres den Konflikt erkennt.
+    await sb.from("nutrition_goals").upsert(
+      { user_id: currentUser && currentUser.id, id: "default", ...g, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,id" }
+    );
+    await remoteFetchAll();
+  }
   else { state.goals = { id: "default", ...g }; localSave(); }
   renderAll();
 }
@@ -1695,7 +1582,7 @@ async function callAnalyzeFood(payload) {
   if (!payload.mode && !payload.myFoods) payload = { ...payload, myFoods: myFoodsPayload() };
   const res = await fetch(`${FUNCTIONS_BASE}/analyze-food`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+    headers: fnHeaders(),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error("analyze-food " + res.status);
@@ -1876,7 +1763,7 @@ function renderTracker() {
 
 /* ---- Eingabe ---- */
 /* ---- Chat ---- */
-const CHAT_KEY = "homebase_chat_v1";
+const CHAT_KEY = "samprep_chat_v1";
 let chatMsgs = [];
 let chatPending = { items: [], updates: [], deletes: [] };
 try { chatMsgs = JSON.parse(localStorage.getItem(CHAT_KEY) || "[]"); } catch (e) { chatMsgs = []; }
@@ -1932,7 +1819,7 @@ async function chatSend(text) {
   try {
     const res = await fetch(`${FUNCTIONS_BASE}/nutrition-chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "apikey": cfg.SUPABASE_ANON_KEY, "Authorization": `Bearer ${cfg.SUPABASE_ANON_KEY}` },
+      headers: fnHeaders(),
       body: JSON.stringify({
         messages: chatMsgs, myFoods: myFoodsPayload(),
         goals: goalValues(), totals: foodTotals(trackerISO()),
@@ -2265,15 +2152,15 @@ async function fetchWeather(lat, lng) {
 }
 function initWeather() {
   let cached = null;
-  try { cached = JSON.parse(localStorage.getItem("homebase_wx_coords") || "null"); } catch (e) {}
+  try { cached = JSON.parse(localStorage.getItem("samprep_wx_coords") || "null"); } catch (e) {}
   if (cached && cached.lat != null) { fetchWeather(cached.lat, cached.lng); return; }
-  const c = (prospekteLand === "ch") ? { lat: 47.37, lng: 8.54 } : { lat: 52.52, lng: 13.40 };
+  const c = { lat: 52.52, lng: 13.40 };  // Berlin als Start, bis der Standort kommt
   fetchWeather(c.lat, c.lng);
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       pos => {
         const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        localStorage.setItem("homebase_wx_coords", JSON.stringify(coords));
+        localStorage.setItem("samprep_wx_coords", JSON.stringify(coords));
         fetchWeather(coords.lat, coords.lng);
       },
       () => {},
@@ -2312,7 +2199,6 @@ async function init() {
   try {
     ensureActiveList();
     renderAll();
-    renderProspekte();
     openView("dashboard");
     initScrollFX();
     initHomeHead();
@@ -2329,4 +2215,103 @@ async function init() {
     try { renderAll(); } catch (e) { console.warn(e); }
   });
 }
-document.addEventListener("DOMContentLoaded", init);
+
+/* ==========================================================================
+   LOGIN (Magic Link)
+   Die App startet erst, wenn eine Sitzung existiert. Ohne Sitzung greifen
+   die RLS-Regeln der Datenbank sowieso und es gaebe nichts zu sehen.
+   ========================================================================== */
+let appStarted = false;
+let currentUser = null;
+
+function authEl(id) { return document.getElementById(id); }
+
+function showGate(show) {
+  const gate = authEl("authGate");
+  if (gate) gate.hidden = !show;
+  document.body.classList.toggle("is-locked", show);
+}
+
+function authNote(text, isError) {
+  const n = authEl("authNote");
+  if (!n) return;
+  n.textContent = text || "";
+  n.style.color = isError ? "#FFB4A2" : "";
+}
+
+async function sendMagicLink() {
+  const input = authEl("authEmail");
+  const btn = authEl("authSend");
+  if (!input) return;
+  const email = input.value.trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    authNote("Bitte eine gueltige E-Mail-Adresse eingeben.", true);
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = "Senden…"; }
+  authNote("");
+  try {
+    const { error } = await sb.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.href.split("#")[0] }
+    });
+    if (error) throw error;
+    authNote("Link verschickt. Schau in dein Postfach — der Link oeffnet die App direkt.");
+    if (btn) btn.textContent = "Nochmal senden";
+  } catch (e) {
+    authNote("Hat nicht geklappt: " + shortErr(e), true);
+    if (btn) btn.textContent = "Link senden";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function signOut() {
+  try { await sb.auth.signOut(); } catch (e) { console.warn(e); }
+  location.reload();
+}
+
+function showWhoami() {
+  const el = authEl("authWho");
+  if (el && currentUser) el.textContent = currentUser.email || "angemeldet";
+}
+
+async function startApp(session) {
+  currentUser = session.user;
+  fnToken = session.access_token;
+  showGate(false);
+  showWhoami();
+  if (appStarted) return;
+  appStarted = true;
+  await init();
+}
+
+async function bootstrap() {
+  const gate = authEl("authGate");
+
+  // Kein Supabase erreichbar: Lokal-Modus ohne Login, nur auf diesem Geraet.
+  if (!REMOTE) {
+    showGate(false);
+    await init();
+    return;
+  }
+
+  authEl("authSend")?.addEventListener("click", sendMagicLink);
+  authEl("authEmail")?.addEventListener("keydown", e => { if (e.key === "Enter") sendMagicLink(); });
+  authEl("logoutBtn")?.addEventListener("click", signOut);
+
+  const { data } = await sb.auth.getSession();
+  if (data && data.session) {
+    await startApp(data.session);
+  } else {
+    showGate(true);
+  }
+
+  // Faengt den Rueckweg aus dem Magic Link ab.
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if (session) { fnToken = session.access_token; await startApp(session); }
+    else if (event === "SIGNED_OUT") location.reload();
+  });
+}
+
+document.addEventListener("DOMContentLoaded", bootstrap);
